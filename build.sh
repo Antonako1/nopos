@@ -2,20 +2,22 @@
 set -euo pipefail
 
 # =============================================================================
-# build.sh — Build the NopOS 1.44 MiB floppy image.
+# build.sh — Build the NopOS 1.44 MiB FAT12 floppy image.
 #
 # Runs inside WSL. Uses the Windows AstraC.exe via WSL interop.
 #
 # Output:
-#   output/floppy.img    (1.44 MiB / 1474560 bytes)
-#   boot/BOOTLOADER.BIN  (512-byte bootsector)
+#   output/floppy.img    (1.44 MiB / 1474560 bytes, FAT12 filesystem)
+#   boot/BOOTLOADER.BIN  (512-byte FAT12 bootsector)
 #   boot/SECOND_STAGE.BIN
 #   kernel/kernel.BIN
 #
-# Disk layout:
-#   LBA 0    sector  1      BOOTLOADER   (512 B)
-#   LBA 1-8  sectors 2-9    SECOND_STAGE (up to 4096 B, loaded to 0x7E00)
-#   LBA 9+   sectors 10-18  KERNEL       (up to 4608 B, loaded to 0x10000)
+# Disk layout (FAT12, standard 1.44 MB floppy):
+#   LBA 0                 boot sector (BOOTLOADER.BIN, includes the BPB)
+#   LBA 1-9               FAT #1
+#   LBA 10-18             FAT #2
+#   LBA 19-32             root directory (224 entries)
+#   LBA 33+               data clusters: STAGE2.BIN and KERNEL.BIN
 # =============================================================================
 
 # Compiler path. Override with: ASTRAC=/path/to/AstraC.exe ./build.sh
@@ -49,21 +51,24 @@ echo "==> [2/4] Assemble second stage"
 echo "==> [3/4] Compile kernel"
 "$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug
 
-echo "==> [4/4] Create 1.44 MiB floppy image"
+echo "==> [4/4] Create FAT12 floppy image"
 
 FLOPPY="$OUT_DIR/floppy.img"
 
 # 2880 sectors of 512 bytes = 1474560 bytes (standard 3.5" HD floppy).
 dd if=/dev/zero of="$FLOPPY" bs=512 count=2880 status=none
 
-# Bootsector at LBA 0.
+# Format it as FAT12. mformat writes its own boot sector + BPB, both FATs and
+# an empty root directory.
+mformat -i "$FLOPPY" -f 1440 ::
+
+# Place the two payloads into the filesystem under 8.3 names.
+mcopy -i "$FLOPPY" "$BOOT_DIR/SECOND_STAGE.BIN" ::STAGE2.BIN
+mcopy -i "$FLOPPY" "$KERNEL_DIR/kernel.BIN"    ::KERNEL.BIN
+
+# Replace mformat's boot sector with ours. BOOTLOADER.AS already contains a
+# BPB identical to mformat's, so the filesystem stays consistent.
 dd if="$BOOT_DIR/BOOTLOADER.BIN" of="$FLOPPY" bs=512 count=1 conv=notrunc status=none
-
-# Second stage at LBA 1 (byte offset 512).
-dd if="$BOOT_DIR/SECOND_STAGE.BIN" of="$FLOPPY" bs=512 seek=1 conv=notrunc status=none
-
-# Kernel at LBA 9 (byte offset 4608).
-dd if="$KERNEL_DIR/kernel.BIN" of="$FLOPPY" bs=512 seek=9 conv=notrunc status=none
 
 # The bootsector must be exactly 512 bytes and end in 0x55 0xAA.
 BOOT_SIZE="$(stat -c%s "$BOOT_DIR/BOOTLOADER.BIN")"
@@ -79,4 +84,7 @@ echo "  second stage:  $(stat -c%s "$BOOT_DIR/SECOND_STAGE.BIN") bytes"
 echo "  kernel:        $(stat -c%s "$KERNEL_DIR/kernel.BIN") bytes"
 echo "  floppy.img:    $(stat -c%s "$FLOPPY") bytes"
 echo
-echo "Run in QEMU:  ./run.sh"
+echo "  FAT12 contents:"
+mdir -i "$FLOPPY" ::
+echo
+echo "Run in QEMU:  qemu-system-i386 -fda output/floppy.img -boot a"
