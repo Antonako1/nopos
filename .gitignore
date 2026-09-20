@@ -1,8 +1,10 @@
 *.BIN
 *.img
 *.ASD
+*.DSM
 kernel/*.AS
 output/
+*.mem
 
 pxe/tftp
 pxe/www
