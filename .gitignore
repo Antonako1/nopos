@@ -1,0 +1,9 @@
+*.BIN
+*.img
+*.ASD
+kernel/*.AS
+output/
+
+pxe/tftp
+pxe/www
+pxe/dnsmasq.conf
