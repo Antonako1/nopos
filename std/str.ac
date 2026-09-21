@@ -1,0 +1,556 @@
+/*
+Function table:
+
+    U32 strlen(PU8 s)
+    U32 strnlen(PU8 s, U32 n)
+
+    I32 strcmp(PU8 s1, PU8 s2)
+    I32 strncmp(PU8 s1, PU8 s2, U32 n)
+    I32 stricmp(PU8 s1, PU8 s2)
+    I32 strnicmp(PU8 s1, PU8 s2, U32 n)
+
+    PU8 strcpy(PU8 dst, PU8 src)
+    PU8 strncpy(PU8 dst, PU8 src, U32 n)
+
+    PU8 strchr(PU8 s, U8 c)
+    PU8 strrchr(PU8 s, U8 c)
+
+    U32 isal(U8 c)
+    U32 isnum(U8 c)
+    U32 isalnum(U8 c)
+    U32 is_space(U8 c)
+
+    PU8 strstr(PU8 haystack, PU8 needle)
+    PU8 stristr(PU8 haystack, PU8 needle)
+
+    I32 atoi(PU8 s)
+    I32 atoi_hex(PU8 s)
+    I32 atoi_bin(PU8 s)
+    I32 atoin(PU8 s, U32 base)
+
+    PU8 itoa(I32 value, PU8 buf, U32 base)
+
+    U8 c_toupper(U8 c)
+    U8 c_tolower(U8 c)
+    PU8 str_toupper(PU8 s)
+    PU8 str_tolower(PU8 s)
+
+    PU8 strcat(PU8 dst, PU8 src)
+    PU8 strncat(PU8 dst, PU8 src, U32 n)
+    PU8 strnconcat(PU8 dst, PU8 src, U32 dst_size)
+
+    PU8 strpbrk(PU8 s, PU8 accept)
+
+    PU8 strtok(PU8 s, PU8 delim)
+    PU8 strtok_r(PU8 s, PU8 delim, PU8 *saveptr)
+
+    U32 strspn(PU8 s, PU8 accept)
+
+    PU8 str_ltrim(PU8 s)
+    PU8 str_rtrim(PU8 s)
+    PU8 str_trim(PU8 s)
+*/
+
+U8 c_toupper(U8 c);
+U8 c_tolower(U8 c);
+I32 atoin(PU8 s, U32 base);
+PU8 strtok_r(PU8 s, PU8 delim, PU8 *saveptr);
+
+U32 strlen(PU8 s) {
+    U32 ln = 0;
+    while(*s != 0) {
+        ln++;
+        s++;
+    }
+    return ln;
+}
+
+U32 strnlen(PU8 s, U32 n) {
+    U32 ln = 0;
+    while(*s != 0 && n > ln) {
+        ln++;
+        s++;
+    }
+    return ln;
+}
+
+I32 strcmp(PU8 s1, PU8 s2) {
+    while (*s1 != 0 && *s1 == *s2) {
+        s1++;
+        s2++;
+    }
+    return (I32)*s1 - (I32)*s2;
+}
+
+I32 strncmp(PU8 s1, PU8 s2, U32 n) {
+    while (n > 0 && *s1 != 0 && *s1 == *s2) {
+        s1++;
+        s2++;
+        n--;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    return (I32)*s1 - (I32)*s2;
+}
+
+I32 stricmp(PU8 s1, PU8 s2) {
+    U8 c1;
+    U8 c2;
+    while (*s1 != 0) {
+        c1 = c_tolower(*s1);
+        c2 = c_tolower(*s2);
+        if (c1 != c2) {
+            return (I32)c1 - (I32)c2;
+        }
+        s1++;
+        s2++;
+    }
+    return (I32)c_tolower(*s1) - (I32)c_tolower(*s2);
+}
+
+I32 strnicmp(PU8 s1, PU8 s2, U32 n) {
+    U8 c1;
+    U8 c2;
+    while (n > 0 && *s1 != 0) {
+        c1 = c_tolower(*s1);
+        c2 = c_tolower(*s2);
+        if (c1 != c2) {
+            return (I32)c1 - (I32)c2;
+        }
+        s1++;
+        s2++;
+        n--;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    return (I32)c_tolower(*s1) - (I32)c_tolower(*s2);
+}
+
+PU8 strcpy(PU8 dst, PU8 src) {
+    PU8 orig = dst;
+    while (*src != 0) {
+        *dst = *src;
+        dst++;
+        src++;
+    }
+    *dst = 0;
+    return orig;
+}
+
+PU8 strncpy(PU8 dst, PU8 src, U32 n) {
+    PU8 orig = dst;
+    U32 i = 0;
+    while (i < n && *src != 0) {
+        *dst = *src;
+        dst++;
+        src++;
+        i++;
+    }
+    while (i < n) {
+        *dst = 0;
+        dst++;
+        i++;
+    }
+    return orig;
+}
+
+PU8 strchr(PU8 s, U8 c) {
+    while (*s != 0) {
+        if (*s == c) {
+            return s;
+        }
+        s++;
+    }
+    if (c == 0) {
+        return s;
+    }
+    return 0;
+}
+
+PU8 strrchr(PU8 s, U8 c) {
+    PU8 found = 0;
+    while (*s != 0) {
+        if (*s == c) {
+            found = s;
+        }
+        s++;
+    }
+    if (c == 0) {
+        return s;
+    }
+    return found;
+}
+
+U32 isal(U8 c) {
+    if (c >= 'A' && c <= 'Z') {
+        return 1;
+    }
+    if (c >= 'a' && c <= 'z') {
+        return 1;
+    }
+    return 0;
+}
+
+U32 isnum(U8 c) {
+    if (c >= '0' && c <= '9') {
+        return 1;
+    }
+    return 0;
+}
+
+U32 isalnum(U8 c) {
+    if (isal(c) == 1) {
+        return 1;
+    }
+    if (isnum(c) == 1) {
+        return 1;
+    }
+    return 0;
+}
+
+U32 is_space(U8 c) {
+    if (c == ' ') {
+        return 1;
+    }
+    if (c == '\t') {
+        return 1;
+    }
+    if (c == '\n') {
+        return 1;
+    }
+    if (c == '\r') {
+        return 1;
+    }
+    return 0;
+}
+
+PU8 strstr(PU8 haystack, PU8 needle) {
+    U32 nl = strlen(needle);
+    if (nl == 0) {
+        return haystack;
+    }
+    while (*haystack != 0) {
+        if (strncmp(haystack, needle, nl) == 0) {
+            return haystack;
+        }
+        haystack++;
+    }
+    return 0;
+}
+
+PU8 stristr(PU8 haystack, PU8 needle) {
+    U32 nl = strlen(needle);
+    if (nl == 0) {
+        return haystack;
+    }
+    while (*haystack != 0) {
+        if (strnicmp(haystack, needle, nl) == 0) {
+            return haystack;
+        }
+        haystack++;
+    }
+    return 0;
+}
+
+I32 atoi(PU8 s) {
+    return atoin(s, 10);
+}
+
+I32 atoi_hex(PU8 s) {
+    return atoin(s, 16);
+}
+
+I32 atoi_bin(PU8 s) {
+    return atoin(s, 2);
+}
+
+I32 atoin(PU8 s, U32 base) {
+    I32 result = 0;
+    I32 sign = 1;
+    U8 c;
+    U32 d;
+    U32 ok;
+
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+        s++;
+    }
+
+    if (*s == '-') {
+        sign = -1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+
+    if (*s == '0') {
+        c = *(s + 1);
+        if (base == 16 && (c == 'x' || c == 'X')) {
+            s = s + 2;
+        } else if (base == 2 && (c == 'b' || c == 'B')) {
+            s = s + 2;
+        }
+    }
+
+    while (*s != 0) {
+        c = *s;
+        d = 0;
+        ok = 0;
+        if (c >= '0' && c <= '9') {
+            d = c - '0';
+            ok = 1;
+        } else if (c >= 'a' && c <= 'z') {
+            d = c - 'a' + 10;
+            ok = 1;
+        } else if (c >= 'A' && c <= 'Z') {
+            d = c - 'A' + 10;
+            ok = 1;
+        }
+        if (ok == 0 || d >= base) {
+            return result * sign;
+        }
+        result = result * (I32)base + (I32)d;
+        s++;
+    }
+    return result * sign;
+}
+
+PU8 itoa(I32 value, PU8 buf, U32 base) {
+    PU8 p = buf;
+    PU8 a;
+    PU8 b;
+    U8 t;
+    U32 v;
+    U32 d;
+    U32 neg = 0;
+
+    if (value < 0 && base == 10) {
+        neg = 1;
+        v = (U32)(-value);
+    } else {
+        v = (U32)value;
+    }
+
+    if (v == 0) {
+        buf[0] = '0';
+        buf[1] = 0;
+        return buf;
+    }
+
+    while (v != 0) {
+        d = v % base;
+        if (d < 10) {
+            *p = (U8)('0' + d);
+        } else {
+            *p = (U8)('A' + (d - 10));
+        }
+        p++;
+        v = v / base;
+    }
+
+    if (neg == 1) {
+        *p = '-';
+        p++;
+    }
+    *p = 0;
+
+    a = buf;
+    b = p - 1;
+    while (a < b) {
+        t = *a;
+        *a = *b;
+        *b = t;
+        a++;
+        b = b - 1;
+    }
+
+    return buf;
+}
+
+U8 c_toupper(U8 c) {
+    if (c >= 'a' && c <= 'z') {
+        return c - ('a' - 'A');
+    }
+    return c;
+}
+
+U8 c_tolower(U8 c) {
+    if (c >= 'A' && c <= 'Z') {
+        return c + ('a' - 'A');
+    }
+    return c;
+}
+
+PU8 str_toupper(PU8 s) {
+    PU8 p = s;
+    while (*p != 0) {
+        *p = c_toupper(*p);
+        p++;
+    }
+    return s;
+}
+
+PU8 str_tolower(PU8 s) {
+    PU8 p = s;
+    while (*p != 0) {
+        *p = c_tolower(*p);
+        p++;
+    }
+    return s;
+}
+
+PU8 strcat(PU8 dst, PU8 src) {
+    PU8 p = dst;
+    while (*p != 0) {
+        p++;
+    }
+    while (*src != 0) {
+        *p = *src;
+        p++;
+        src++;
+    }
+    *p = 0;
+    return dst;
+}
+
+PU8 strncat(PU8 dst, PU8 src, U32 n) {
+    PU8 p = dst;
+    U32 i = 0;
+    while (*p != 0) {
+        p++;
+    }
+    while (i < n && *src != 0) {
+        *p = *src;
+        p++;
+        src++;
+        i++;
+    }
+    *p = 0;
+    return dst;
+}
+
+PU8 strnconcat(PU8 dst, PU8 src, U32 dst_size) {
+    U32 dst_len = strlen(dst);
+    U32 room = 0;
+    PU8 p = dst + dst_len;
+
+    if (dst_size > dst_len + 1) {
+        room = dst_size - dst_len - 1;
+    }
+
+    while (room > 0 && *src != 0) {
+        *p = *src;
+        p++;
+        src++;
+        room--;
+    }
+    *p = 0;
+    return dst;
+}
+
+PU8 strpbrk(PU8 s, PU8 accept) {
+    PU8 a;
+    while (*s != 0) {
+        a = accept;
+        while (*a != 0) {
+            if (*s == *a) {
+                return s;
+            }
+            a++;
+        }
+        s++;
+    }
+    return 0;
+}
+
+PU8 strtok_save;
+
+PU8 strtok(PU8 s, PU8 delim) {
+    return strtok_r(s, delim, &strtok_save);
+}
+
+PU8 strtok_r(PU8 s, PU8 delim, PU8 *saveptr) {
+    PU8 tok;
+    if (s != 0) {
+        *saveptr = s;
+    } else {
+        s = *saveptr;
+    }
+    if (s == 0) {
+        return 0;
+    }
+
+    while (*s != 0) {
+        if (strchr(delim, *s) == 0) {
+            break;
+        }
+        s++;
+    }
+    if (*s == 0) {
+        *saveptr = 0;
+        return 0;
+    }
+
+    tok = s;
+    while (*s != 0) {
+        if (strchr(delim, *s) != 0) {
+            break;
+        }
+        s++;
+    }
+    if (*s != 0) {
+        *s = 0;
+        s++;
+    }
+    *saveptr = s;
+    return tok;
+}
+
+U32 strspn(PU8 s, PU8 accept) {
+    U32 n = 0;
+    PU8 a;
+    U32 found;
+    while (*s != 0) {
+        a = accept;
+        found = 0;
+        while (*a != 0) {
+            if (*s == *a) {
+                found = 1;
+            }
+            a++;
+        }
+        if (found == 0) {
+            return n;
+        }
+        n++;
+        s++;
+    }
+    return n;
+}
+
+PU8 str_ltrim(PU8 s) {
+    while (is_space(*s) == 1) {
+        s++;
+    }
+    return s;
+}
+
+PU8 str_rtrim(PU8 s) {
+    PU8 end = s + strlen(s);
+    while (end > s) {
+        end = end - 1;
+        if (is_space(*end) == 0) {
+            end = end + 1;
+            break;
+        }
+    }
+    *end = 0;
+    return s;
+}
+
+PU8 str_trim(PU8 s) {
+    PU8 p = str_ltrim(s);
+    str_rtrim(p);
+    return p;
+}
