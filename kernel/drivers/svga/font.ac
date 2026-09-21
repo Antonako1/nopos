@@ -2,7 +2,7 @@
 
 #define FNT_CH_WIDTH 8
 #define FNT_CH_HEIGHT 16
-#define FNT_CH_CNT 0xFF
+#define FNT_CH_CNT 256
 
 U8 fnt8x16[4096] =
 {
