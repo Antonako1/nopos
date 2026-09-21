@@ -1,0 +1,23 @@
+U0 _start() {
+    asm { CLI }
+
+    GDT_INIT();
+    IDT_INIT();
+    ISR_INIT();
+    PIC_REMAP();
+    IRQ_INIT();
+
+    cls();
+
+    puts("NopOS 32-bit is alive!");
+
+    while (1) {
+        asm { 
+            CLI    
+            HLT 
+        }
+    }
+}
+
+
+#include "kernel.ah"
