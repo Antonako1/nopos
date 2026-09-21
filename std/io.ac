@@ -31,9 +31,13 @@ Function table:
 #define WHITE           0xF
 
 U32 row = 0;
+
 U32 col = 0;
+
 U8 fg = WHITE;
+
 U8 bg = BLACK;
+
 PU8 video_memory = 0xB8000;
 
 void putc(U8 c) {
