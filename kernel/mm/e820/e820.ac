@@ -1,0 +1,9 @@
+typedef struct _E820_ENTRY {
+    U32 BaseAddressLow;
+    U32 BaseAddressHigh;
+    U32 LengthLow;
+    U32 LengthHigh;
+    U32 Type;
+} E820_ENTRY;
+
+#define E820_MAX_ENTRIES 32

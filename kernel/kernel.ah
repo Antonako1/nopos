@@ -1,0 +1,28 @@
+#ifndef KERNEL_AH
+#define KERNEL_AH
+
+
+
+
+
+#include "./cpu/gdt.ac"
+#include "./cpu/idt.ac"
+#include "./cpu/irq.ac"
+#include "./cpu/isr.ac"
+#include "./cpu/fpu.ac"
+
+#include ./drivers/svga/svga.ac
+
+#include ./mm/e820/e820.ac
+
+#include ../std/io.ac
+#include ../std/str.ac
+
+typedef struct _KERNEL_TABLE {
+    E820_ENTRY e820entries[E820_MAX_ENTRIES];
+    U32 e820cnt;
+    VESA_INFO vesa_info;
+    VBE_MODE_INFO vbe_mode_info;    
+} KERNEL_TABLE;
+
+#endif // KERNEL_AH

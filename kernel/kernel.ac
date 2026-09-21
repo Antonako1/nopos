@@ -1,4 +1,7 @@
-U0 _start() {
+#include "kernel.ah"
+KERNEL_TABLE *gkt;
+
+U0 _start(KERNEL_TABLE *kt) {
     asm { CLI }
 
     GDT_INIT();
@@ -7,10 +10,22 @@ U0 _start() {
     PIC_REMAP();
     IRQ_INIT();
 
-    cls();
+    gkt = kt;
 
-    puts("NopOS 32-bit is alive!");
+    // cls();
 
+    // puts("NopOS 32-bit is alive!\n");
+
+    // NOTE: AstraC struct member access is broken (returns the field address
+    // without dereferencing; struct-array indexing uses a stride of 4), so
+    // read KERNEL_TABLE via raw pointer offsets. Layout:
+    //   e820entries[E820_MAX_ENTRIES] @ 0    (32 * 20 = 640 bytes)
+    //   e820cnt                        @ 640
+    //   vesa_info                      @ 644  (512 bytes)
+    //   vbe_mode_info                  @ 1156 (256 bytes)
+    for(U32 o = 0; o < 100; o++) {
+        SVGA_DRAW_FRAMEBUFFER(0, RED)
+    }
     while (1) {
         asm { 
             CLI    
@@ -19,5 +34,3 @@ U0 _start() {
     }
 }
 
-
-#include "kernel.ah"
