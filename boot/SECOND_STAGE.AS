@@ -13,6 +13,7 @@
 .code
 
 #define SVGA_TARGET_MODE 0x105   ; 1024x768x8 (256 colors)
+#define SVGA_ON
 
 main:
     MOV [drive], DL
@@ -100,7 +101,9 @@ main:
     CALL gather_e820
 
     ; Detect VBE, query the target mode, and set it.
+    #ifdef SVGA_ON
     CALL init_svga
+    #endif
 
     CLI
 
