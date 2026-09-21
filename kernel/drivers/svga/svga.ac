@@ -150,8 +150,8 @@ void SVGA_DRAW_RECTANGLE(U32 x, U32 y, U32 w, U32 h, U8 colour) {
   if (w == 0 || h == 0) return;
   U32 x1 = x + w - 1;
   U32 y1 = y + h - 1;
-  SVGA_DRAW_LINE(x, y, x1, y, colour);
   SVGA_DRAW_LINE(x1, y, x1, y1, colour);
+  SVGA_DRAW_LINE(x, y, x1, y, colour);
   SVGA_DRAW_LINE(x1, y1, x, y1, colour);
   SVGA_DRAW_LINE(x, y1, x, y, colour);
 }
@@ -179,45 +179,35 @@ void SVGA_DRAW_TRIANGLE(U32 x1, U32 y1, U32 x2, U32 y2, U32 x3, U32 y3, U8 colou
   SVGA_DRAW_LINE(x3, y3, x1, y1, colour);
 }
 
-void SVGA_DRAW_FILLED_TRIANGLE(U32 x1, U32 y1, U32 x2, U32 y2, U32 x3, U32 y3, U8 colour) {
-  I32 a_x = x1; I32 a_y = y1;
-  I32 b_x = x2; I32 b_y = y2;
-  I32 c_x = x3; I32 c_y = y3;
-  
-  I32 minx = a_x; I32 maxx = a_x;
-  I32 miny = a_y; I32 maxy = a_y;
-  
-  I32 x; I32 y; 
-  I32 d1; I32 d2; 
-  I32 d3; 
-  I32 neg; I32 pos;
+void SVGA_DRAW_FILLED_TRIANGLE(I32 x1, I32 y1, I32 x2, I32 y2, I32 x3, I32 y3, U8 colour, I32 screen_w, I32 screen_h) {
+    I32 minx = x1; I32 maxx = x1;
+    I32 miny = y1; I32 maxy = y1;
 
-  if (b_x < minx) minx = b_x;
-  if (b_x > maxx) maxx = b_x;
-  if (c_x < minx) minx = c_x;
-  if (c_x > maxx) maxx = c_x;
-  if (b_y < miny) miny = b_y;
-  if (b_y > maxy) maxy = b_y;
-  if (c_y < miny) miny = c_y;
-  if (c_y > maxy) maxy = c_y;
+    if (x2 < minx) minx = x2; if (x2 > maxx) maxx = x2;
+    if (x3 < minx) minx = x3; if (x3 > maxx) maxx = x3;
+    if (y2 < miny) miny = y2; if (y2 > maxy) maxy = y2;
+    if (y3 < miny) miny = y3; if (y3 > maxy) maxy = y3;
 
-  for (y = miny; y <= maxy; y++) {
-    for (x = minx; x <= maxx; x++) {
-      d1 = (x - b_x) * (a_y - b_y) - (a_x - b_x) * (y - b_y);
-      d2 = (x - c_x) * (b_y - c_y) - (b_x - c_x) * (y - c_y);
-      d3 = (x - a_x) * (c_y - a_y) - (c_x - a_x) * (y - a_y);
-      
-      neg = 0;
-      pos = 0;
-      
-      if (d1 < 0 || d2 < 0 || d3 < 0) neg = 1;
-      if (d1 > 0 || d2 > 0 || d3 > 0) pos = 1;
-      
-      if (neg == 0 || pos == 0) {
-        SVGA_DRAW_PIXEL(x, y, colour);
-      }
+    // Clip bounding box to screen dimensions to prevent out-of-bounds crashes
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    if (maxx >= screen_w) maxx = screen_w - 1;
+    if (maxy >= screen_h) maxy = screen_h - 1;
+
+    if (minx > maxx || miny > maxy) return;
+
+    for (I32 y = miny; y <= maxy; y++) {
+        for (I32 x = minx; x <= maxx; x++) {
+            I32 d1 = (x - x2) * (y1 - y2) - (x1 - x2) * (y - y2);
+            I32 d2 = (x - x3) * (y2 - y3) - (x2 - x3) * (y - y3);
+            I32 d3 = (x - x1) * (y3 - y1) - (x3 - x1) * (y - y1);
+
+            if ((d1 >= 0 && d2 >= 0 && d3 >= 0) ||
+                (d1 <= 0 && d2 <= 0 && d3 <= 0)) {
+                SVGA_DRAW_PIXEL(x, y, colour);
+            }
+        }
     }
-  }
 }
 
 void SVGA_DRAW_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
@@ -263,67 +253,75 @@ void SVGA_DRAW_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
   }
 }
 
-void SVGA_DRAW_FILLED_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
-  if (a == 0 || b == 0) return;
-  
-  I32 ia = (I32)a;
-  I32 ib = (I32)b;
-  I32 a2 = ia * ia;
-  I32 b2 = ib * ib;
-  I32 x;
-  I32 y;
-  
-  for (y = -ib; y <= ib; y++) {
-    for (x = -ia; x <= ia; x++) {
-      I32 lhs = x * x * b2 + y * y * a2;
-      if (lhs <= (a2 * b2)) {
-        SVGA_DRAW_PIXEL(x0 + x, y0 + y, colour);
-      }
+void SVGA_DRAW_FILLED_ELLIPSE(I32 x0, I32 y0, I32 a, I32 b, U8 colour) {
+    if (a <= 0 || b <= 0) return;
+
+    I32 x = 0;
+    I32 y = b;
+    I32 a2 = a * a;
+    I32 b2 = b * b;
+    I32 crit1 = -(a2 / 4 + a % 2 + b2);
+    I32 crit2 = -(b2 / 4 + b % 2 + a2);
+    I32 t = -a2 * y;
+    I32 dxt = 2 * b2 * x;
+    I32 dyt = -2 * a2 * y;
+    I32 d, i;
+
+    // Draw horizontal spans to fill the ellipse symmetrically
+    while (y >= 0 && x <= a) {
+        if (t + b2 * x <= crit1 || t + a2 * y <= crit2) {
+            // Draw span left to right
+            for (i = x0 - x; i <= x0 + x; i++) {
+                SVGA_DRAW_PIXEL(i, y0 + y, colour);
+                SVGA_DRAW_PIXEL(i, y0 - y, colour);
+            }
+            x++;
+            t += dxt;
+            dxt += 2 * b2;
+        } else {
+            x++;
+            y--;
+            t += dxt - dyt;
+            dxt += 2 * b2;
+            dyt += 2 * a2;
+        }
     }
-  }
 }
 
 void SVGA_DRAW_TEST(void) {
-  SVGA_CLEAR_SCREEN(0); // Start with a clean black screen
+    SVGA_CLEAR_SCREEN(BLACK);
 
-  // 1. Draw 256 colors in a 16x16 grid at the top-left
-  // Each block is 16x16 pixels -> entire palette is 256x256 pixels
-  SVGA_DRAW_STRING(20, 20, (PU8)"256 Colors:", 15, 0);
-  for (U32 i = 0; i < 256; i++) {
-    U32 block_x = 20 + (i % 16) * 16;
-    U32 block_y = 50 + (i / 16) * 16;
-    SVGA_DRAW_RECTANGLE_FILLED(block_x, block_y, 16, 16, (U8)i);
-  }
+    SVGA_DRAW_STRING(20, 20, (PU8)"256 Colors:", WHITE, BLACK);
 
-  // 2. Draw 256 font characters in a 16x16 grid at the top-right
-  SVGA_DRAW_STRING(350, 20, (PU8)"256 Characters:", 15, 0);
-  for (U32 i = 0; i < 256; i++) {
-    U32 char_x = 350 + (i % 16) * FNT_CH_WIDTH;
-    U32 char_y = 50 + (i / 16) * FNT_CH_HEIGHT;
-    SVGA_DRAW_CHARACTER(char_x, char_y, (U8)i, 15, 0); // White foreground
-  }
+    for (U32 i = 0; i < 256; i++) {
+        U32 block_x = 20 + (i % 16) * 16;
+        U32 block_y = 50 + (i / 16) * 16;
+        SVGA_DRAW_RECTANGLE_FILLED(block_x, block_y, 16, 16, (U8)i);
+    }
 
-  // 3. Draw Shapes across the lower portion of the screen
-  U32 shapes_y = 350;
-  
-  SVGA_DRAW_STRING(20, shapes_y, (PU8)"Shapes Demo:", 15, 0);
+    SVGA_DRAW_STRING(350, 20, (PU8)"256 Characters:", WHITE, BLACK);
 
-  // Line
-  SVGA_DRAW_LINE(20, shapes_y + 40, 100, shapes_y + 120, 10);
-  SVGA_DRAW_STRING(20, shapes_y + 130, (PU8)"Line", 15, 0);
+    for (U32 i = 0; i < 256; i++) {
+        U32 char_x = 350 + (i % 16) * FNT_CH_WIDTH;
+        U32 char_y = 50 + (i / 16) * FNT_CH_HEIGHT;
+        SVGA_DRAW_CHARACTER(char_x, char_y, (U8)i, WHITE, BLACK);
+    }
 
-  // Outline & Filled Rectangle
-  SVGA_DRAW_RECTANGLE(150, shapes_y + 40, 60, 60, 11);
-  SVGA_DRAW_RECTANGLE_FILLED(230, shapes_y + 40, 60, 60, 12);
-  SVGA_DRAW_STRING(150, shapes_y + 130, (PU8)"Rectangles", 15, 0);
+    U32 shapes_y = 350;
+    SVGA_DRAW_STRING(20, shapes_y, (PU8)"Shapes Demo:", WHITE, BLACK);
 
-  // Outline & Filled Triangle
-  SVGA_DRAW_TRIANGLE(350, shapes_y + 100, 380, shapes_y + 40, 410, shapes_y + 100, 13);
-  SVGA_DRAW_FILLED_TRIANGLE(430, shapes_y + 100, 460, shapes_y + 40, 490, shapes_y + 100, 14);
-  SVGA_DRAW_STRING(350, shapes_y + 130, (PU8)"Triangles", 15, 0);
+    SVGA_DRAW_LINE(20, shapes_y + 40, 100, shapes_y + 120, LIGHT_GREEN);
+    SVGA_DRAW_STRING(20, shapes_y + 130, (PU8)"Line", WHITE, BLACK);
 
-  // Outline & Filled Ellipse
-  SVGA_DRAW_ELLIPSE(570, shapes_y + 70, 40, 25, 9);
-  SVGA_DRAW_FILLED_ELLIPSE(680, shapes_y + 70, 40, 25, 10);
-  SVGA_DRAW_STRING(570, shapes_y + 130, (PU8)"Ellipses", 15, 0);
+    SVGA_DRAW_RECTANGLE(150, shapes_y + 40, 60, 60, LIGHT_CYAN);
+    SVGA_DRAW_RECTANGLE_FILLED(230, shapes_y + 40, 60, 60, LIGHT_RED);
+    SVGA_DRAW_STRING(150, shapes_y + 130, (PU8)"Rectangles", WHITE, BLACK);
+
+    SVGA_DRAW_TRIANGLE(350, shapes_y + 100, 380, shapes_y + 40, 410, shapes_y + 100, LIGHT_MAGENTA);
+    // SVGA_DRAW_FILLED_TRIANGLE(430, shapes_y + 100, 460, shapes_y + 40, 490, shapes_y + 100, YELLOW);
+    SVGA_DRAW_STRING(350, shapes_y + 130, (PU8)"Triangles", WHITE, BLACK);
+
+    SVGA_DRAW_ELLIPSE(570, shapes_y + 70, 40, 25, BLUE);
+    // SVGA_DRAW_FILLED_ELLIPSE(680, shapes_y + 70, 40, 25, LIGHT_BLUE);
+    SVGA_DRAW_STRING(570, shapes_y + 130, (PU8)"Ellipses", WHITE, BLACK);
 }
