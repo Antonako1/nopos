@@ -10,22 +10,11 @@ U0 _start(KERNEL_TABLE *kt) {
     PIC_REMAP();
     IRQ_INIT();
 
+    serial_ports_init();
     gkt = kt;
 
-    // cls();
-
-    // puts("NopOS 32-bit is alive!\n");
-
-    // NOTE: AstraC struct member access is broken (returns the field address
-    // without dereferencing; struct-array indexing uses a stride of 4), so
-    // read KERNEL_TABLE via raw pointer offsets. Layout:
-    //   e820entries[E820_MAX_ENTRIES] @ 0    (32 * 20 = 640 bytes)
-    //   e820cnt                        @ 640
-    //   vesa_info                      @ 644  (512 bytes)
-    //   vbe_mode_info                  @ 1156 (256 bytes)
-    for(U32 o = 0; o < 100; o++) {
-        SVGA_DRAW_FRAMEBUFFER(0, RED)
-    }
+    SVGA_DRAW_TEST();    
+    
     while (1) {
         asm { 
             CLI    
