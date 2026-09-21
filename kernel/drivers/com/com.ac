@@ -1,0 +1,40 @@
+#define SERIAL_PORT1 0x3F8 // COMA
+#define SERIAL_PORT2 0x2F8 // COMB
+
+VOID serial_port_init(U16 port) {
+    outb(port + 1, 0x00);    // Disable interrupts
+    outb(port + 3, 0x80);    // Enable DLAB
+    outb(port + 0, 0x01);    // Divisor low byte (115200 baud)
+    outb(port + 1, 0x00);    // Divisor high byte
+    outb(port + 3, 0x03);    // 8 bits, no parity, one stop bit
+    outb(port + 2, 0xC7);    // FIFO enabled
+    outb(port + 4, 0x0B);    // Modem control
+}
+
+VOID serial_ports_init() {
+    serial_port_init(SERIAL_PORT1);
+    serial_port_init(SERIAL_PORT2);
+}
+I32 is_serial_transit_empty(U16 port) {
+    return inb(port+5) & 0x20;
+}
+
+VOID serial_wb(U16 port, U8 data){
+    while (!(inb(port + 5) & 0x20));
+    outb(port, data);
+}
+VOID serial_wdata(U16 port, PU8 data, U32 len){
+    for (U32 i = 0; i < len; i++)
+        serial_wb(port, data[i]);
+}
+
+VOID serial_rb(U16 port, PU8 data);
+VOID serial_rstr(U16 port, PU8 buffer, U32 max_len);
+VOID serial_rbuf(U16 port, PU8 buffer, U32 max_len);
+VOID serial_test(U16 port)
+{
+    while (1)
+    {
+        serial_wb(port, 'A');
+    }
+}
