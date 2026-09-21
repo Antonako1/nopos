@@ -1,0 +1,83 @@
+/*
+Function table:
+    void putc(U8 c)
+    void puts(PU8 s)
+    void cls()
+    void set_fg(U8 c)
+    void set_bg(U8 c)
+    void set_col(U32 c)
+    void set_row(U32 r)
+*/
+
+// FIXED: Swapped to standard IBM 80x25 text mode dimensions
+#define COLS            80
+#define ROWS            25
+
+#define BLACK           0x0
+#define BLUE            0x1
+#define GREEN           0x2 
+#define CYAN            0x3
+#define RED             0x4
+#define MAGENTA         0x5
+#define BROWN           0x6
+#define LIGHT_GRAY      0x7
+#define DARK_GRAY       0x8
+#define LIGHT_BLUE      0x9
+#define LIGHT_GREEN     0xA
+#define LIGHT_CYAN      0xB
+#define LIGHT_RED       0xC
+#define LIGHT_MAGENTA   0xD
+#define YELLOW          0xE
+#define WHITE           0xF
+
+U32 row = 0;
+U32 col = 0;
+U8 fg = WHITE;
+U8 bg = BLACK;
+PU8 video_memory = 0xB8000;
+
+void putc(U8 c) {
+    if (c == '\n') {
+        col = 0;
+        row++;
+        return;
+    }
+
+    U32 pos = (row * COLS + col) * 2;
+    U8 attr = (bg << 4) | fg;
+    
+    video_memory[pos]     = c;
+    video_memory[pos + 1] = attr;
+    
+    col++;
+    if (col >= COLS) {
+        col = 0;
+        row++;
+    }
+    
+    if (row >= ROWS) {
+        row = ROWS - 1;
+    }
+}
+
+void puts(PU8 s) {
+    while(*s != 0) {
+        putc(*s);
+        s++;
+    }
+}
+
+void cls() {
+    U8 attr = (bg << 4) | fg;
+    for(U32 i = 0; i < ROWS * COLS * 2; i += 2) {
+        video_memory[i]     = ' ';
+        video_memory[i + 1] = attr;
+    }
+    row = 0;
+    col = 0;
+}
+
+void set_fg(U8 c)   { fg = c; }
+void set_bg(U8 c)   { bg = c; }
+void set_col(U32 c) { col = c; }
+void set_row(U32 r) { row = r; }
