@@ -9,6 +9,33 @@
  *   - An asm block is a clobber-everything barrier: preserve anything you need.
  *   - The compiler also rewrites identifier-like tokens, so avoid naming
  *     operands after registers and avoid identifier text in `;` comments.
+
+ Function table:
+    U0 outb(U16 port, U8 val)
+    U0 outw(U16 port, U16 val)
+    U0 outl(U16 port, U32 val)
+    U8 inb(U16 port)
+    U16 inw(U16 port)
+    U32 inl(U16 port)
+    U0 io_wait()
+    U0 disable_interrupts()
+    U0 enable_interrupts()
+    U0 cpu_halt()
+    U0 cpu_nop()
+    U32 read_eflags()
+    U0 write_eflags(U32 val)
+    U32 read_cr0()
+    U32 read_cr2()
+    U32 read_cr3()
+    U32 read_cr4()
+    U0 write_cr0(U32 val)
+    U0 write_cr2(U32 val)
+    U0 write_cr3(U32 val)
+    U0 write_cr4(U32 val)
+    U0 rdmsr(U32 msr, PU32 lo, PU32 hi)
+    U0 wrmsr(U32 msr, U32 lo, U32 hi)
+    U0 cpuid(U32 leaf, PU32 p_eax, PU32 p_ebx, PU32 p_ecx, PU32 p_edx)
+    U0 rdtsc(PU32 lo, PU32 hi)
  */
 
 /* ── Port I/O ─────────────────────────────────────────────────────────────── */
@@ -16,8 +43,10 @@
 U0 outb(U16 port, U8 val)
 {
     asm {
-        MOV DX, port
-        MOV AL, val
+        MOV AX, port
+        MOV DX, AX
+        mov BL, val
+        MOV AL, bl
         OUT DX, AL
     }
 }
