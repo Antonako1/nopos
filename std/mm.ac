@@ -1,0 +1,88 @@
+/*
+ * std/mm.ac — memory primitives
+ *
+ * memset/memzero/memcpy use the string instructions (REP STOSB/MOVSB/MOVSD).
+ * Note: the assembler treats REP as a zero-operand prefix, so it must be
+ * emitted on its own line immediately before the string instruction.
+
+ Function table:
+    PU8 memset(PU8 dest, U8 val, U32 sz)
+    PU8 memcpy(PU8 dest, PU8 src, U32 sz)
+    PU8 memzero(PU8 dest, U32 sz)
+    I32 memcmp(PU8 p1, PU8 p2, U32 sz)
+    PU8 memmove(PU8 dest, PU8 src, U32 sz)
+ */
+
+// Fill sz bytes at dest with the byte value val.
+PU8 memset(PU8 dest, U8 val, U32 sz) {
+    asm {
+        CLD
+        MOV EDI, dest
+        MOV AL, val
+        MOV ECX, sz
+        REP
+        STOSB
+    }
+    return dest;
+}
+
+// Copy sz bytes from src to dest.
+PU8 memcpy(PU8 dest, PU8 src, U32 sz) {
+    asm {
+        CLD
+        MOV ESI, src
+        MOV EDI, dest
+        MOV ECX, sz
+        REP
+        MOVSB
+    }
+    return dest;
+}
+
+// Zero sz bytes at dest (dword-wise for speed, then the tail).
+PU8 memzero(PU8 dest, U32 sz) {
+    asm {
+        CLD
+        MOV EDI, dest
+        XOR EAX, EAX
+        MOV ECX, sz
+        SHR ECX, 2
+        REP
+        STOSD
+        MOV ECX, sz
+        AND ECX, 3
+        REP
+        STOSB
+    }
+    return dest;
+}
+
+// Compare sz bytes of p1 and p2. Returns <0, 0, or >0.
+I32 memcmp(PU8 p1, PU8 p2, U32 sz) {
+    U32 i;
+    for (i = 0; i < sz; i++) {
+        if (p1[i] != p2[i]) {
+            return (I32)p1[i] - (I32)p2[i];
+        }
+    }
+    return 0;
+}
+
+// Copy sz bytes from src to dest, handling overlap correctly.
+PU8 memmove(PU8 dest, PU8 src, U32 sz) {
+    if (dest == src || sz == 0) {
+        return dest;
+    }
+    if (dest < src) {
+        U32 i;
+        for (i = 0; i < sz; i++) {
+            dest[i] = src[i];
+        }
+    } else {
+        while (sz > 0) {
+            sz--;
+            dest[sz] = src[sz];
+        }
+    }
+    return dest;
+}
