@@ -20,7 +20,7 @@ I32 is_serial_transit_empty(U16 port) {
 }
 
 VOID serial_wb(U16 port, U8 data){
-    while (!(inb(port + 5) & 0x20));
+    while (!(inb(port + 5) & 0x20)) {}
     outb(port, data);
 }
 VOID serial_wdata(U16 port, PU8 data, U32 len){
