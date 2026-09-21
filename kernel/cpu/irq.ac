@@ -228,8 +228,10 @@ U0 IRQ_INIT()
     idt_set_gate(47, (U32)&irq47, 0x08, 0x8E);
 }
 
-U0 irq_handler(PU32 r)
-{
+U0 irq_handler(PU32 r){
+    if(r[12] == 32) {
+        pit_handler();
+    }
     // if (r[12] == 33)
     // {
     //     KEYBOARD_HANDLER();
@@ -240,8 +242,7 @@ U0 irq_handler(PU32 r)
         DB 0xE6, 0x20
     }
 
-    if (r[12] >= 40)
-    {
+    if (r[12] >= 40 && r <= 47){
         asm {
             MOV AL, 0x20
             DB 0xE6, 0xA0

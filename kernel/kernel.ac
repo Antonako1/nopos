@@ -10,10 +10,12 @@ U0 _start(KERNEL_TABLE *kt) {
     PIC_REMAP();
     IRQ_INIT();
 
+    pit_init();
+
     serial_ports_init();
     gkt = kt;
 
-    SVGA_DRAW_TEST();    
+    // SVGA_DRAW_TEST();    
     
     while (1) {
         asm { 

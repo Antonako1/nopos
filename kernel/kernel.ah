@@ -13,6 +13,8 @@
 #include "./cpu/isr.ac"
 #include "./cpu/fpu.ac"
 
+// #include ./drivers/cmos/pit.ac
+#include ./drivers/cmos/cmos.ac
 #include ./drivers/com/com.ac
 #include ./drivers/svga/svga.ac
 

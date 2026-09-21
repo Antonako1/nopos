@@ -1,0 +1,30 @@
+#define PIT_CHNL0   0x40
+#define PIT_CMD     0x43
+#define PIT_FREQ    1193182
+#define PIT_VECTOR  0x20 // irq(0)
+#define PIT_TICK_HZ      100
+#define PIT_TICK_MS (1000 / PIT_TICK_HZ)
+
+
+U32 ticks = 0;
+U32 hz = 0;
+
+void pit_set_freq(U32 freq) {
+    U32 div = PIT_FREQ / freq;
+    outb(PIT_CMD, 0x36);
+    outb(PIT_CHNL0, (U8)(div & 0xFF));
+    outb(PIT_CHNL0, (U8)((div >> 8) & 0xFF));
+}
+
+void pit_init() {
+    hz = PIT_TICK_HZ;
+    pit_set_freq(hz);
+
+    // idt_set_gate(PIT_VECTOR, isr_pit, KCS, 0x8E);
+    // ISR_REGISTER_HANDLER(PIC_REMAP_OFFSET + 0, isr_pit);
+    // PIC_Unmask(0);
+    ticks = 0;
+}
+U0 pit_handler() {
+    ticks++;
+}
