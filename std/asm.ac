@@ -1,0 +1,255 @@
+/*
+ * std/asm.ac — inline assembly primitives
+ *
+ * Inline asm "restraints":
+ *   - Variables from the enclosing scope are referenced by *name* inside the
+ *     asm block; the compiler substitutes their stack address ([EBP+offset]).
+ *   - Operand width is chosen by the register used (DX=16-bit, AL=8-bit,
+ *     EAX=32-bit); there is no explicit constraint syntax.
+ *   - An asm block is a clobber-everything barrier: preserve anything you need.
+ *   - The compiler also rewrites identifier-like tokens, so avoid naming
+ *     operands after registers and avoid identifier text in `;` comments.
+ */
+
+/* ── Port I/O ─────────────────────────────────────────────────────────────── */
+
+U0 outb(U16 port, U8 val)
+{
+    asm {
+        MOV DX, port
+        MOV AL, val
+        OUT DX, AL
+    }
+}
+
+U0 outw(U16 port, U16 val)
+{
+    asm {
+        MOV DX, port
+        MOV AX, val
+        OUT DX, AX
+    }
+}
+
+U0 outl(U16 port, U32 val)
+{
+    asm {
+        MOV DX, port
+        MOV EAX, val
+        OUT DX, EAX
+    }
+}
+
+U8 inb(U16 port)
+{
+    U8 val;
+    asm {
+        MOV DX, port
+        IN AL, DX
+        MOV val, AL
+    }
+    return val;
+}
+
+U16 inw(U16 port)
+{
+    U16 val;
+    asm {
+        MOV DX, port
+        IN AX, DX
+        MOV val, AX
+    }
+    return val;
+}
+
+U32 inl(U16 port)
+{
+    U32 val;
+    asm {
+        MOV DX, port
+        IN EAX, DX
+        MOV val, EAX
+    }
+    return val;
+}
+
+// Short delay by writing to an unused port (0x80).
+U0 io_wait()
+{
+    asm {
+        MOV AL, 0
+        OUT 0x80, AL
+    }
+}
+
+/* ── CPU control ────────────────────────────────────────────────────────────
+ * NOTE: the functions are NOT named cli/sti/hlt/nop because the compiler
+ * case-insensitively matches identifiers in an asm block against symbols, so a
+ * function named `cli` would rewrite the mnemonic `CLI` into a placeholder.
+ */
+
+U0 disable_interrupts() { asm { CLI } }
+U0 enable_interrupts()  { asm { STI } }
+U0 cpu_halt()           { asm { HLT } }
+U0 cpu_nop()            { asm { NOP } }
+
+/* ── EFLAGS ───────────────────────────────────────────────────────────────── */
+
+U32 read_eflags()
+{
+    U32 val;
+    asm {
+        PUSHFD
+        POP EAX
+        MOV val, EAX
+    }
+    return val;
+}
+
+U0 write_eflags(U32 val)
+{
+    asm {
+        MOV EAX, val
+        PUSH EAX
+        POPFD
+    }
+}
+
+/* ── Control registers ──────────────────────────────────────────────────────
+ * MOV r32,CRn / MOV CRn,r32 are not encoded by the assembler, so the opcodes
+ * are hand-emitted with DB.  ModRM byte (reg = CR index, r/m = EAX):
+ *   CR0 = 0xC0, CR2 = 0xD0, CR3 = 0xD8, CR4 = 0xE0
+ *   read  = 0F 20 <modrm>    write = 0F 22 <modrm>
+ */
+
+U32 read_cr0()
+{
+    U32 val;
+    asm {
+        DB 0x0F, 0x20, 0xC0
+        MOV val, EAX
+    }
+    return val;
+}
+
+U32 read_cr2()
+{
+    U32 val;
+    asm {
+        DB 0x0F, 0x20, 0xD0
+        MOV val, EAX
+    }
+    return val;
+}
+
+U32 read_cr3()
+{
+    U32 val;
+    asm {
+        DB 0x0F, 0x20, 0xD8
+        MOV val, EAX
+    }
+    return val;
+}
+
+U32 read_cr4()
+{
+    U32 val;
+    asm {
+        DB 0x0F, 0x20, 0xE0
+        MOV val, EAX
+    }
+    return val;
+}
+
+U0 write_cr0(U32 val)
+{
+    asm {
+        MOV EAX, val
+        DB 0x0F, 0x22, 0xC0
+    }
+}
+
+U0 write_cr2(U32 val)
+{
+    asm {
+        MOV EAX, val
+        DB 0x0F, 0x22, 0xD0
+    }
+}
+
+U0 write_cr3(U32 val)
+{
+    asm {
+        MOV EAX, val
+        DB 0x0F, 0x22, 0xD8
+    }
+}
+
+U0 write_cr4(U32 val)
+{
+    asm {
+        MOV EAX, val
+        DB 0x0F, 0x22, 0xE0
+    }
+}
+
+/* ── Model-specific registers ─────────────────────────────────────────────── */
+
+// Read MSR `msr` into *lo (bits 0..31) and *hi (bits 32..63).  0F 32 = RDMSR.
+U0 rdmsr(U32 msr, PU32 lo, PU32 hi)
+{
+    asm {
+        MOV ECX, msr
+        DB 0x0F, 0x32
+        MOV EBX, lo
+        MOV [EBX], EAX
+        MOV EBX, hi
+        MOV [EBX], EDX
+    }
+}
+
+// Write *lo:*hi to MSR `msr`.  0F 30 = WRMSR.
+U0 wrmsr(U32 msr, U32 lo, U32 hi)
+{
+    asm {
+        MOV ECX, msr
+        MOV EAX, lo
+        MOV EDX, hi
+        DB 0x0F, 0x30
+    }
+}
+
+/* ── CPUID ────────────────────────────────────────────────────────────────── */
+
+// Execute CPUID leaf `leaf`; store the four result registers.  0F A2 = CPUID.
+U0 cpuid(U32 leaf, PU32 p_eax, PU32 p_ebx, PU32 p_ecx, PU32 p_edx)
+{
+    asm {
+        MOV EAX, leaf
+        DB 0x0F, 0xA2
+        MOV EDI, p_eax
+        MOV [EDI], EAX
+        MOV EDI, p_ebx
+        MOV [EDI], EBX
+        MOV EDI, p_ecx
+        MOV [EDI], ECX
+        MOV EDI, p_edx
+        MOV [EDI], EDX
+    }
+}
+
+/* ── RDTSC ────────────────────────────────────────────────────────────────── */
+
+// Read the timestamp counter into *lo (bits 0..31) and *hi (bits 32..63).
+// 0F 31 = RDTSC.
+U0 rdtsc(PU32 lo, PU32 hi)
+{
+    asm {
+        DB 0x0F, 0x31
+        MOV EBX, lo
+        MOV [EBX], EAX
+        MOV EBX, hi
+        MOV [EBX], EDX
+    }
+}
