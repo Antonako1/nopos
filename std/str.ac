@@ -316,53 +316,92 @@ I32 atoin(PU8 s, U32 base) {
     return result * sign;
 }
 
-PU8 itoa(I32 value, PU8 buf, U32 base) {
-    PU8 p = buf;
+PU8 itoa(I32 value, PU8 buf, U32 base)
+{
+    PU8 p;
     PU8 a;
     PU8 b;
     U8 t;
+
     U32 v;
     U32 d;
-    U32 neg = 0;
+    U32 neg;
 
-    if (value < 0 && base == 10) {
+    if (buf == 0)
+        return 0;
+
+    if (base < 2 || base > 36)
+    {
+        buf[0] = 0;
+        return buf;
+    }
+
+    p = buf;
+    neg = 0;
+
+    if (value < 0 && base == 10)
+    {
         neg = 1;
-        v = (U32)(-value);
-    } else {
+
+        /*
+         * Convert before negating so I32_MIN works:
+         *
+         * -2147483648 -> 2147483648U
+         */
+        v = (U32)(-(value + 1));
+        v = v + 1;
+    }
+    else
+    {
         v = (U32)value;
     }
 
-    if (v == 0) {
+    if (v == 0)
+    {
         buf[0] = '0';
         buf[1] = 0;
         return buf;
     }
 
-    while (v != 0) {
+    while (v != 0)
+    {
         d = v % base;
-        if (d < 10) {
+
+        if (d < 10)
+        {
             *p = (U8)('0' + d);
-        } else {
+        }
+        else
+        {
             *p = (U8)('A' + (d - 10));
         }
+
         p++;
         v = v / base;
     }
 
-    if (neg == 1) {
+    if (neg != 0)
+    {
         *p = '-';
         p++;
     }
+
     *p = 0;
 
+    /*
+     * Reverse string.
+     */
     a = buf;
     b = p - 1;
-    while (a < b) {
+
+    while (a < b)
+    {
         t = *a;
         *a = *b;
         *b = t;
+
         a++;
-        b = b - 1;
+        b--;
     }
 
     return buf;
