@@ -5,6 +5,7 @@ Function table:
     U8 ps2_key_ready()
     U8 ps2_getc()
     U8 ps2_get_mods()
+    U0 ps2_wait_write()
 */
 
 #define KBD_MAP_SZ      128
@@ -57,6 +58,11 @@ U0 kbd_push(U8 ch) {
     if (next == g_kbd_tail) return;   // ring full, drop key
     g_kbd_buffer[g_kbd_head] = ch;
     g_kbd_head = next;
+}
+
+U0 ps2_wait_write() {
+    // Wait until bit 1 (input buffer status) of port 0x64 becomes 0
+    while ((inb(0x64) & 2) != 0);
 }
 
 U0 ps2_init() {
@@ -155,12 +161,11 @@ U0 ps2_init() {
     g_kbd_map_shift[0x35] = '?';
 
     // ── Enable keyboard interface + keyboard (8042) ───────────────────
-    asm {
-        MOV AL, 0xAE
-        OUT 0x64, AL
-        MOV AL, 0xF4
-        OUT 0x60, AL
-    }
+    ps2_wait_write();
+    outb(0x64, 0xAE); 
+    
+    ps2_wait_write();
+    outb(0x60, 0xF4);
 
     pic_unmask(1);
 }
