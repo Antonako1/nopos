@@ -343,38 +343,38 @@ U0 isr31()
 
 U0 ISR_INIT()
 {
-    idt_set_gate(0,  (U32)&isr0, 0x08, 0x8E);
-    idt_set_gate(1,  (U32)&isr1, 0x08, 0x8E);
-    idt_set_gate(2,  (U32)&isr2, 0x08, 0x8E);
-    idt_set_gate(3,  (U32)&isr3, 0x08, 0x8E);
-    idt_set_gate(4,  (U32)&isr4, 0x08, 0x8E);
-    idt_set_gate(5,  (U32)&isr5, 0x08, 0x8E);
-    idt_set_gate(6,  (U32)&isr6, 0x08, 0x8E);
-    idt_set_gate(7,  (U32)&isr7, 0x08, 0x8E);
-    idt_set_gate(8,  (U32)&isr8, 0x08, 0x8E);
-    idt_set_gate(9,  (U32)&isr9, 0x08, 0x8E);
-    idt_set_gate(10, (U32)&isr10, 0x08, 0x8E);
-    idt_set_gate(11, (U32)&isr11, 0x08, 0x8E);
-    idt_set_gate(12, (U32)&isr12, 0x08, 0x8E);
-    idt_set_gate(13, (U32)&isr13, 0x08, 0x8E);
-    idt_set_gate(14, (U32)&isr14, 0x08, 0x8E);
-    idt_set_gate(15, (U32)&isr15, 0x08, 0x8E);
-    idt_set_gate(16, (U32)&isr16, 0x08, 0x8E);
-    idt_set_gate(17, (U32)&isr17, 0x08, 0x8E);
-    idt_set_gate(18, (U32)&isr18, 0x08, 0x8E);
-    idt_set_gate(19, (U32)&isr19, 0x08, 0x8E);
-    idt_set_gate(20, (U32)&isr20, 0x08, 0x8E);
-    idt_set_gate(21, (U32)&isr21, 0x08, 0x8E);
-    idt_set_gate(22, (U32)&isr22, 0x08, 0x8E);
-    idt_set_gate(23, (U32)&isr23, 0x08, 0x8E);
-    idt_set_gate(24, (U32)&isr24, 0x08, 0x8E);
-    idt_set_gate(25, (U32)&isr25, 0x08, 0x8E);
-    idt_set_gate(26, (U32)&isr26, 0x08, 0x8E);
-    idt_set_gate(27, (U32)&isr27, 0x08, 0x8E);
-    idt_set_gate(28, (U32)&isr28, 0x08, 0x8E);
-    idt_set_gate(29, (U32)&isr29, 0x08, 0x8E);
-    idt_set_gate(30, (U32)&isr30, 0x08, 0x8E);
-    idt_set_gate(31, (U32)&isr31, 0x08, 0x8E);
+    idt_set_gate(0,  (U32)&isr0, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(1,  (U32)&isr1, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(2,  (U32)&isr2, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(3,  (U32)&isr3, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(4,  (U32)&isr4, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(5,  (U32)&isr5, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(6,  (U32)&isr6, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(7,  (U32)&isr7, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(8,  (U32)&isr8, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(9,  (U32)&isr9, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(10, (U32)&isr10, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(11, (U32)&isr11, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(12, (U32)&isr12, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(13, (U32)&isr13, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(14, (U32)&isr14, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(15, (U32)&isr15, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(16, (U32)&isr16, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(17, (U32)&isr17, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(18, (U32)&isr18, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(19, (U32)&isr19, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(20, (U32)&isr20, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(21, (U32)&isr21, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(22, (U32)&isr22, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(23, (U32)&isr23, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(24, (U32)&isr24, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(25, (U32)&isr25, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(26, (U32)&isr26, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(27, (U32)&isr27, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(28, (U32)&isr28, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(29, (U32)&isr29, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(30, (U32)&isr30, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(31, (U32)&isr31, KCODE_SEL, INT_GATE_32);
 }
 
 U0 isr_handler(PU32 r)

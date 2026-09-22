@@ -208,34 +208,43 @@ U0 PIC_REMAP()
     }
 }
 
+#define PIC1_COMMAND_PORT 0x20
+#define PIC1_DATA_PORT 0x21
+#define PIC2_COMMAND_PORT 0xA0
+#define PIC2_DATA_PORT 0xA1
+#define PIC_EOI 0x20
+
+#define PIC_REMAP_OFFSET 0x20
+#define PIC_REMAP_OFFSET2 0x28
+#define PIC_REMAP_END     0x30
+
 U0 IRQ_INIT()
 {
-    idt_set_gate(32, (U32)&irq32, 0x08, 0x8E);
-    idt_set_gate(33, (U32)&irq33, 0x08, 0x8E);
-    idt_set_gate(34, (U32)&irq34, 0x08, 0x8E);
-    idt_set_gate(35, (U32)&irq35, 0x08, 0x8E);
-    idt_set_gate(36, (U32)&irq36, 0x08, 0x8E);
-    idt_set_gate(37, (U32)&irq37, 0x08, 0x8E);
-    idt_set_gate(38, (U32)&irq38, 0x08, 0x8E);
-    idt_set_gate(39, (U32)&irq39, 0x08, 0x8E);
-    idt_set_gate(40, (U32)&irq40, 0x08, 0x8E);
-    idt_set_gate(41, (U32)&irq41, 0x08, 0x8E);
-    idt_set_gate(42, (U32)&irq42, 0x08, 0x8E);
-    idt_set_gate(43, (U32)&irq43, 0x08, 0x8E);
-    idt_set_gate(44, (U32)&irq44, 0x08, 0x8E);
-    idt_set_gate(45, (U32)&irq45, 0x08, 0x8E);
-    idt_set_gate(46, (U32)&irq46, 0x08, 0x8E);
-    idt_set_gate(47, (U32)&irq47, 0x08, 0x8E);
+    idt_set_gate(32, (U32)&irq32, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(33, (U32)&irq33, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(34, (U32)&irq34, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(35, (U32)&irq35, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(36, (U32)&irq36, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(37, (U32)&irq37, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(38, (U32)&irq38, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(39, (U32)&irq39, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(40, (U32)&irq40, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(41, (U32)&irq41, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(42, (U32)&irq42, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(43, (U32)&irq43, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(44, (U32)&irq44, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(45, (U32)&irq45, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(46, (U32)&irq46, KCODE_SEL, INT_GATE_32);
+    idt_set_gate(47, (U32)&irq47, KCODE_SEL, INT_GATE_32);
 }
 
 U0 irq_handler(PU32 r){
     if(r[12] == 32) {
         pit_handler();
     }
-    // if (r[12] == 33)
-    // {
-    //     KEYBOARD_HANDLER();
-    // }
+    if (r[12] == 33) {
+        kbd_handler();
+    }
 
     asm {
         MOV AL, 0x20
@@ -247,5 +256,29 @@ U0 irq_handler(PU32 r){
             MOV AL, 0x20
             DB 0xE6, 0xA0
         }
+    }
+}
+
+U0 pic_unmask(I32 irq) {
+    ASM { CLI }
+
+    if (irq < 8) {
+        // Master PIC
+        U8 mask = inb(PIC1_DATA_PORT);
+        mask &= ~(1 << irq);       // Clear the bit to unmask
+        outb(PIC1_DATA_PORT, mask);
+    } else {
+        // Slave PIC
+        I32 slave_irq = irq - 8;
+
+        // Unmask the slave IRQ
+        U8 slave_mask = inb(PIC2_DATA_PORT);
+        slave_mask &= ~(1 << slave_irq); 
+        outb(PIC2_DATA_PORT, slave_mask);
+
+        // Ensure master cascade line (IRQ2) is always unmasked
+        U8 master_mask = inb(PIC1_DATA_PORT);
+        master_mask &= ~(1 << 2);  // Clear IRQ2
+        outb(PIC1_DATA_PORT, master_mask);
     }
 }
