@@ -1,0 +1,6 @@
+EXCLUDE=.BIN,.ASD,kernel.AS
+../../std
+../../shell
+../../programs
+../../kernel
+../../boot

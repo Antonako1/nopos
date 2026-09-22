@@ -17,7 +17,7 @@ set -euo pipefail
 #   LBA 1-9               FAT #1
 #   LBA 10-18             FAT #2
 #   LBA 19-32             root directory (224 entries)
-#   LBA 33+               data clusters: STAGE2.BIN and KERNEL.BIN
+#   LBA 33+               data clusters: STAGE2.BIN, KERNEL.BIN, and root/ files
 # =============================================================================
 
 # Compiler path. Override with: ASTRAC=/path/to/AstraC.exe ./build.sh
@@ -26,6 +26,7 @@ ASTRAC="${ASTRAC:-/mnt/c/Users/anton/source/repos/AstraC/build/Release/AstraC.ex
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOT_DIR="$SCRIPT_DIR/boot"
 KERNEL_DIR="$SCRIPT_DIR/kernel"
+ROOT_DIR="$SCRIPT_DIR/root"
 OUT_DIR="$SCRIPT_DIR/output"
 
 if [ ! -x "$ASTRAC" ]; then
@@ -49,7 +50,7 @@ echo "==> [2/4] Assemble second stage"
 "$ASTRAC" asm "$SECOND_STAGE_WIN" bits 16 org 7E00 warn 2
 
 echo "==> [3/4] Compile kernel"
-"$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug
+"$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug #verbose
 
 echo "==> [4/4] Create FAT12 floppy image"
 
@@ -62,9 +63,112 @@ dd if=/dev/zero of="$FLOPPY" bs=512 count=2880 status=none
 # an empty root directory.
 mformat -i "$FLOPPY" -f 1440 ::
 
-# Place the two payloads into the filesystem under 8.3 names.
+# Place the two main boot payloads into the filesystem under 8.3 names.
 mcopy -i "$FLOPPY" "$BOOT_DIR/SECOND_STAGE.BIN" ::STAGE2.BIN
-mcopy -i "$FLOPPY" "$KERNEL_DIR/kernel.BIN"    ::KERNEL.BIN
+mcopy -i "$FLOPPY" "$KERNEL_DIR/kernel.BIN"     ::KERNEL.BIN
+
+# Function to parse and stage a CONTAINER file
+process_container() {
+    local container_file="$1"
+    local container_dir
+    container_dir="$(dirname "$container_file")"
+
+    echo "--> Processing CONTAINER in: $container_dir"
+
+    # Temporary staging directory
+    local STAGE_DIR
+    STAGE_DIR="$(mktemp -d)"
+
+    local excludes=""
+    local paths=()
+
+    # Read CONTAINER line-by-line (stripping Windows \r line endings)
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Clean line
+        line="$(echo "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -z "$line" ] && continue
+
+        if [[ "$line" == EXCLUDE=* ]]; then
+            excludes="${line#EXCLUDE=}"
+        else
+            paths+=("$line")
+        fi
+    done < "$container_file"
+
+    # 1. Copy specified paths into staging directory
+    for rel_path in "${paths[@]}"; do
+        local full_path="$container_dir/$rel_path"
+        if [ -e "$full_path" ]; then
+            cp -r "$full_path" "$STAGE_DIR/"
+        else
+            echo "    WARNING: Path not found: $full_path" >&2
+        fi
+    done
+
+    # 2. Apply exclusions
+    if [ -n "$excludes" ]; then
+        IFS=',' read -ra EXCL_ARRAY <<< "$excludes"
+        for item in "${EXCL_ARRAY[@]}"; do
+            item="$(echo "$item" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "$item" ] && continue
+
+            if [[ "$item" == .* ]]; then
+                # Extension match (e.g., .BIN -> *.BIN)
+                find "$STAGE_DIR" -type f -name "*$item" -delete
+            else
+                # Exact filename match (e.g., kernel.AS)
+                find "$STAGE_DIR" -name "$item" -delete
+            fi
+        done
+    fi
+
+    # 3. Determine target directory inside FAT image
+    local rel_target="${container_dir#$ROOT_DIR}"
+    rel_target="${rel_target#/}"
+
+    local target_fat_dir="::/"
+    if [ -n "$rel_target" ]; then
+        target_fat_dir="::/$rel_target"
+        # Ensure subdirectory exists inside disk image
+        mmd -i "$FLOPPY" "$target_fat_dir" 2>/dev/null || true
+    fi
+
+    # 4. Copy staged files to floppy image
+    shopt -s nullglob
+    local staged_files=("$STAGE_DIR"/*)
+    shopt -u nullglob
+
+    if [ ${#staged_files[@]} -gt 0 ]; then
+        mcopy -i "$FLOPPY" -s "${staged_files[@]}" "$target_fat_dir"
+    fi
+
+    # Clean up temp folder
+    rm -rf "$STAGE_DIR"
+}
+
+# --- Copy Files / Containers to Floppy Image ---
+
+if [ -d "$ROOT_DIR" ]; then
+    # Find and process all CONTAINER files
+    shopt -s globstar nullglob
+    CONTAINERS=("$ROOT_DIR"/**/CONTAINER)
+    shopt -u globstar nullglob
+
+    if [ ${#CONTAINERS[@]} -gt 0 ]; then
+        for container in "${CONTAINERS[@]}"; do
+            process_container "$container"
+        done
+    else
+        # Fallback: copy root/ directory directly if no CONTAINER file exists
+        echo "--> Copying source files directly..."
+        shopt -s nullglob
+        ROOT_FILES=("$ROOT_DIR"/*)
+        shopt -u nullglob
+        if [ ${#ROOT_FILES[@]} -gt 0 ]; then
+            mcopy -i "$FLOPPY" -s "${ROOT_FILES[@]}" ::/
+        fi
+    fi
+fi
 
 # Replace mformat's boot sector with ours. BOOTLOADER.AS already contains a
 # BPB identical to mformat's, so the filesystem stays consistent.
@@ -87,4 +191,4 @@ echo
 echo "  FAT12 contents:"
 mdir -i "$FLOPPY" ::
 echo
-echo "Run in QEMU:  qemu-system-i386 -fda output/floppy.img -boot a"
+echo "Run in QEMU:   qemu-system-i386 -fda output/floppy.img -boot a"
