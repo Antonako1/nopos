@@ -91,7 +91,12 @@ main:
     PUSH AX
     ADD AX, 31                   ; LBA = 31 + cluster number
     CALL read_sector
-    ADD BX, 512
+
+    ; Advance destination ES segment by 0x20 (512 bytes)
+    MOV DX, ES
+    ADD DX, 0x0020
+    MOV ES, DX
+
     POP AX
     CALL next_cluster
     JMP .load_file
