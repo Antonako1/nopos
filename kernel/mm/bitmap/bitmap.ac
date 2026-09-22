@@ -1,0 +1,27 @@
+#define BITMAP_STATE_SET    1
+#define BITMAP_STATE_UNSET  0
+
+typedef struct _bitmap {
+    PU8 data;
+    U32 size; // in bytes
+} bitmap;
+
+VOID bm_create(U32 size, VOIDPTR buff_addr, bitmap *bm) {
+    if (!bm || !buff_addr || size == 0) return;
+    bm->data = (U8 *)buff_addr;
+    bm->size = size;
+    MEMZERO(bm->data, size);
+}
+U32 bm_get(bitmap *bm, U32 index) {
+    if (!bm || index >= bm->size * 8) return 0;
+    return (bm->data[index / 8] >> (index % 8)) & 1;
+}
+BOOLEAN bm_set(bitmap *bm, U32 index, U32 state) {
+    if (!bm || index >= bm->size * 8) return FALSE;
+    if (state) {
+        bm->data[index / 8] |= (1 << (index % 8));
+    } else {
+        bm->data[index / 8] &= ~(1 << (index % 8));
+    }
+    return TRUE;
+}
