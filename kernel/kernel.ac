@@ -15,15 +15,31 @@ U0 _start(KERNEL_TABLE *kt) {
 
     serial_ports_init();
     gkt = kt;
+    dcominit();
+    SVGA_CLEAR_SCREEN(BLACK);
+    SVGA_DRAW_TEST();
+    
+    dcom_yl_on();
+    dcom_rl_on();
+    dcom_gl_on();
+    dcom_rl_off();
+    dcom_yl_off();
+    dcom_gl_off();
+    dcomputs("nopos dcomputs() test");
 
-    SVGA_DRAW_TEST();    
+
+    // panic_if(pg_init() == FALSE, "Failed to initialized pageframe", PANIC_KERNEL, 0);
+    // panic_if(heap_init(1) == FALSE, "Failed to initialized heap", PANIC_KERNEL, 0);
+
+
     asm { STI }
-    while (1) {
-        U8 c = ps2_getc();
-        if (c != 0) { // Don't draw unmapped keys (like raw shifts/caps)
-            SVGA_DRAW_CHARACTER(256, 256, c, WHITE, BLUE);
-        }
-    }
+
+    dcom_rl_off();
+    dcom_yl_off();
+    dcom_gl_on();
+    
+    SHELL_RUN();
+
     asm { 
         CLI    
         HLT 
