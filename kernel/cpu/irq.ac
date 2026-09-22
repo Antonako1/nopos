@@ -282,3 +282,28 @@ U0 pic_unmask(I32 irq) {
         outb(PIC1_DATA_PORT, master_mask);
     }
 }
+
+U0 pic_mask(I32 irq) {
+    ASM { CLI }
+
+    if (irq < 8) {
+        // Master PIC
+        U8 mask = inb(PIC1_DATA_PORT);
+        mask |= (1 << irq);        // Set the bit to mask
+        outb(PIC1_DATA_PORT, mask);
+    } else {
+        // Slave PIC
+        I32 slave_irq = irq - 8;
+        U8 mask = inb(PIC2_DATA_PORT);
+        mask |= (1 << slave_irq);   // Set the bit to mask
+        outb(PIC2_DATA_PORT, mask);
+    }
+}
+
+U0 pic_mask_all() {
+    ASM { CLI }
+    
+    // 0xFF masks all 8 lines on the respective PIC
+    outb(PIC1_DATA_PORT, 0xFF);
+    outb(PIC2_DATA_PORT, 0xFF);
+}
