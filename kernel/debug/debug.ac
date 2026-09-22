@@ -1,0 +1,28 @@
+/**
+ * Function table:
+ *      dcomprintf(PU8 fmt, ...);
+ *      U0 dcominit()
+ *      U0 dcomputs(PU8 s)
+ *      U0 dcomnputs(PU8 s, U32 n)
+ */
+
+U0 dcominit() {
+    serial_wb(SERIAL_PORT2, 12); // \f -> clear screen
+}
+
+U0 dcomputs(PU8 s) {
+    serial_wdata(SERIAL_PORT2, s, strlen(s));
+}
+U0 dcomnputs(PU8 s, U32 n) {
+    serial_wdata(SERIAL_PORT2, s, n);
+}
+U0 dcomprintf(PU8 fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    U8 buf[80]; // 20*4=80, display size
+    U32 len = vsnprintf(buf, 80, fmt, args);
+    va_end(args);
+
+    if(len >= 80) len = 79
+    serial_wdata(SERIAL_PORT2, buf, len);
+}
