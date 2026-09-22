@@ -11,17 +11,19 @@ U0 _start(KERNEL_TABLE *kt) {
     IRQ_INIT();
 
     pit_init();
+    ps2_init();
 
     serial_ports_init();
     gkt = kt;
 
-    // SVGA_DRAW_TEST();    
-    
+    SVGA_DRAW_TEST();    
+    asm { STI }
     while (1) {
-        asm { 
-            CLI    
-            HLT 
-        }
+        U8 c = ps2_getc();
+        SVGA_DRAW_CHARACTER(256,256,c,WHITE,BLUE);
+    }
+    asm { 
+        CLI    
+        HLT 
     }
 }
-
