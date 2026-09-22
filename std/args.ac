@@ -1,11 +1,12 @@
 U32 putch(PU8 buf, U32 size, U32 pos, U8 c) {
     if (size > 0 && pos < size - 1) {
-        buf[pos] = c;
+        PU8 p = buf;
+        p[pos] = c;
     }
     return pos + 1;
 }
 
-U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper) {
+U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper, U32 width, U8 pad) {
     U8  tmp[32];
     U32 n = 0;
     if (val == 0) {
@@ -25,6 +26,12 @@ U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper) {
             val = val / base;
         }
     }
+
+    while (n < width) {
+        tmp[n] = pad;
+        n = n + 1;
+    }
+
     while (n > 0) {
         n = n - 1;
         pos = putch(buf, size, pos, tmp[n]);
@@ -33,6 +40,7 @@ U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper) {
 }
 
 U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
+    return 0;
     U32 pos = 0;
     U32 i   = 0;
     while (fmt[i] != 0) {
@@ -43,9 +51,25 @@ U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
             continue;
         }
 
-        i = i + 1;
+        i = i + 1; // skip '%'
+
+        U8 pad = ' ';
+        U32 width = 0;
+
+        if (fmt[i] == '0') {
+            pad = '0';
+            i = i + 1;
+        }
+
+        while (fmt[i] >= '0' && fmt[i] <= '9') {
+            width = width * 10 + (U32)(fmt[i] - '0');
+            i = i + 1;
+        }
+
         U8 spec = fmt[i];
-        i = i + 1;
+        if (spec != 0) {
+            i = i + 1;
+        }
 
         if (spec == '%') {
             pos = putch(buf, size, pos, '%');
@@ -60,26 +84,30 @@ U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
                 j = j + 1;
             }
         } else if (spec == 'x') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, FALSE);
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, FALSE, width, pad);
         } else if (spec == 'X') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, TRUE);
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, TRUE, width, pad);
         } else if (spec == 'u') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 10, FALSE);
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 10, FALSE, width, pad);
         } else if (spec == 'd') {
             I32 val = (I32)va_arg(args, U32);
             if (val < 0) {
                 pos = putch(buf, size, pos, '-');
                 val = -val;
+                if (width > 0) {
+                    width = width - 1;
+                }
             }
-            pos = emit_uint(buf, size, pos, (U32)val, 10, FALSE);
+            pos = emit_uint(buf, size, pos, (U32)val, 10, FALSE, width, pad);
         }
     }
 
     if (size > 0) {
+        PU8 p = buf;
         if (pos >= size) {
-            buf[size - 1] = 0;
+            p[size - 1] = 0;
         } else {
-            buf[pos] = 0;
+            p[pos] = 0;
         }
     }
     return pos;
