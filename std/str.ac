@@ -49,6 +49,8 @@ Function table:
     PU8 str_ltrim(PU8 s)
     PU8 str_rtrim(PU8 s)
     PU8 str_trim(PU8 s)
+
+    U32 snprintf(PU8 buf, U32 size, PU8 fmt, ...)
 */
 PU8 g_strtok_save;
 
@@ -592,4 +594,12 @@ PU8 str_trim(PU8 s) {
     PU8 p = str_ltrim(s);
     str_rtrim(p);
     return p;
+}
+
+U32 snprintf(PU8 buf, U32 size, PU8 fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    U32 n = vsnprintf(buf, size, fmt, args);
+    va_end(args);
+    return n;
 }

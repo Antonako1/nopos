@@ -1,0 +1,86 @@
+U32 putch(PU8 buf, U32 size, U32 pos, U8 c) {
+    if (size > 0 && pos < size - 1) {
+        buf[pos] = c;
+    }
+    return pos + 1;
+}
+
+U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper) {
+    U8  tmp[32];
+    U32 n = 0;
+    if (val == 0) {
+        tmp[n] = '0';
+        n = 1;
+    } else {
+        while (val != 0) {
+            U32 d = val % base;
+            if (d < 10) {
+                tmp[n] = (U8)(d + '0');
+            } else if (upper) {
+                tmp[n] = (U8)(d - 10 + 'A');
+            } else {
+                tmp[n] = (U8)(d - 10 + 'a');
+            }
+            n = n + 1;
+            val = val / base;
+        }
+    }
+    while (n > 0) {
+        n = n - 1;
+        pos = putch(buf, size, pos, tmp[n]);
+    }
+    return pos;
+}
+
+U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
+    U32 pos = 0;
+    U32 i   = 0;
+    while (fmt[i] != 0) {
+        U8 c = fmt[i];
+        if (c != '%') {
+            pos = putch(buf, size, pos, c);
+            i = i + 1;
+            continue;
+        }
+
+        i = i + 1;
+        U8 spec = fmt[i];
+        i = i + 1;
+
+        if (spec == '%') {
+            pos = putch(buf, size, pos, '%');
+        } else if (spec == 'c') {
+            U8 ch = (U8)va_arg(args, U32);
+            pos = putch(buf, size, pos, ch);
+        } else if (spec == 's') {
+            PU8 s = va_arg(args, PU8);
+            U32 j = 0;
+            while (s[j] != 0) {
+                pos = putch(buf, size, pos, s[j]);
+                j = j + 1;
+            }
+        } else if (spec == 'x') {
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, FALSE);
+        } else if (spec == 'X') {
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, TRUE);
+        } else if (spec == 'u') {
+            pos = emit_uint(buf, size, pos, va_arg(args, U32), 10, FALSE);
+        } else if (spec == 'd') {
+            I32 val = (I32)va_arg(args, U32);
+            if (val < 0) {
+                pos = putch(buf, size, pos, '-');
+                val = -val;
+            }
+            pos = emit_uint(buf, size, pos, (U32)val, 10, FALSE);
+        }
+    }
+
+    if (size > 0) {
+        if (pos >= size) {
+            buf[size - 1] = 0;
+        } else {
+            buf[pos] = 0;
+        }
+    }
+    return pos;
+}
