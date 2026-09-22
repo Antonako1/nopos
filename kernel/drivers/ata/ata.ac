@@ -1,0 +1,169 @@
+/*
+Function table:
+  U0 ata_init(void);
+  U0 ata_wait_400ns(void);
+  U8 ata_wait_bsy(void);
+  U8 ata_wait_drq(void);
+  U0 ata_read_sector(U32 lba, PU8 buffer);
+  U0 ata_write_sector(U32 lba, PU8 buffer);
+
+  // Global Disk Driver API interface:
+  U0 DISK_READ_SECTORS(U32 lba, U32 count, PU8 buffer);
+  U0 DISK_WRITE_SECTORS(U32 lba, U32 count, PU8 buffer);
+*/
+
+// Primary ATA Bus Ports
+#define ATA_PRIMARY_DATA         0x1F0
+#define ATA_PRIMARY_ERR          0x1F1
+#define ATA_PRIMARY_SEC_COUNT    0x1F2
+#define ATA_PRIMARY_LBA_LOW      0x1F3
+#define ATA_PRIMARY_LBA_MID      0x1F4
+#define ATA_PRIMARY_LBA_HIGH     0x1F5
+#define ATA_PRIMARY_DRIVE_HEAD   0x1F6
+#define ATA_PRIMARY_COMM_STAT    0x1F7
+#define ATA_PRIMARY_ALT_STAT     0x3F6
+
+// Status Register Flags
+#define ATA_STAT_BSY  0x80  // Busy
+#define ATA_STAT_DRDY 0x40  // Drive Ready
+#define ATA_STAT_DF   0x20  // Drive Fault
+#define ATA_STAT_DRQ  0x08  // Data Request Ready
+#define ATA_STAT_ERR  0x01  // Error
+
+// Commands
+#define ATA_CMD_READ_SECTORS  0x20
+#define ATA_CMD_WRITE_SECTORS 0x30
+#define ATA_CMD_CACHE_FLUSH   0xE7
+#define ATA_CMD_IDENTIFY      0xEC
+
+
+// ── Timing & Status Polling Helpers ───────────────────────────────────
+
+// Reading alternate status 4 times provides the required ~400ns delay for ATA hardware bus settling
+U0 ata_wait_400ns(void) {
+    inb(ATA_PRIMARY_ALT_STAT);
+    inb(ATA_PRIMARY_ALT_STAT);
+    inb(ATA_PRIMARY_ALT_STAT);
+    inb(ATA_PRIMARY_ALT_STAT);
+}
+
+// Poll until BSY flag clears (Returns 1 on success, 0 on timeout)
+U8 ata_wait_bsy(void) {
+    U32 timeout = 100000;
+    while (timeout--) {
+        if ((inb(ATA_PRIMARY_COMM_STAT) & ATA_STAT_BSY) == 0)
+            return 1;
+    }
+    return 0; // Hardware timeout
+}
+
+// Poll until DRQ flag sets (Data is ready to transfer)
+U8 ata_wait_drq(void) {
+    U32 timeout = 100000;
+    while (timeout--) {
+        U8 status = inb(ATA_PRIMARY_COMM_STAT);
+        if (status & ATA_STAT_ERR) return 0; // Drive reported error
+        if (status & ATA_STAT_DRQ) return 1; // Data request ready
+    }
+    return 0;
+}
+
+// ── Sector Read / Write Core Implementations ───────────────────────────
+
+// Reads a single 512-byte sector using LBA28 addressing (Primary Master drive)
+U0 ata_read_sector(U32 lba, PU8 buffer) {
+    ata_wait_bsy();
+
+    // 0xE0 sets LBA mode + selects Master drive (0xA0 = Master, 0xB0 = Slave)
+    outb(ATA_PRIMARY_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F));
+    ata_wait_400ns();
+
+    outb(ATA_PRIMARY_SEC_COUNT, 1);                   // Sector count = 1
+    outb(ATA_PRIMARY_LBA_LOW,  (U8)(lba & 0xFF));        // LBA bits 0-7
+    outb(ATA_PRIMARY_LBA_MID,  (U8)((lba >> 8) & 0xFF));  // LBA bits 8-15
+    outb(ATA_PRIMARY_LBA_HIGH, (U8)((lba >> 16) & 0xFF)); // LBA bits 16-23
+    outb(ATA_PRIMARY_COMM_STAT, ATA_CMD_READ_SECTORS);
+
+    if (!ata_wait_drq()) return; // Hardware error or timeout
+
+    // Read 256 words (512 bytes) from data port
+    PU16 ptr = (PU16)buffer;
+    for (U32 i = 0; i < 256; i++) {
+        ptr[i] = inw(ATA_PRIMARY_DATA);
+    }
+
+    ata_wait_400ns();
+}
+
+// Writes a single 512-byte sector using LBA28 addressing (Primary Master drive)
+U0 ata_write_sector(U32 lba, PU8 buffer) {
+    ata_wait_bsy();
+
+    outb(ATA_PRIMARY_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F));
+    ata_wait_400ns();
+
+    outb(ATA_PRIMARY_SEC_COUNT, 1);
+    outb(ATA_PRIMARY_LBA_LOW,  (U8)(lba & 0xFF));
+    outb(ATA_PRIMARY_LBA_MID,  (U8)((lba >> 8) & 0xFF));
+    outb(ATA_PRIMARY_LBA_HIGH, (U8)((lba >> 16) & 0xFF));
+    outb(ATA_PRIMARY_COMM_STAT, ATA_CMD_WRITE_SECTORS);
+
+    if (!ata_wait_drq()) return;
+
+    // Write 256 words (512 bytes) to data port
+    PU16 ptr = (PU16)buffer;
+    for (U32 i = 0; i < 256; i++) {
+        outw(ATA_PRIMARY_DATA, ptr[i]);
+    }
+
+    // Flush disk write cache
+    outb(ATA_PRIMARY_COMM_STAT, ATA_CMD_CACHE_FLUSH);
+    ata_wait_bsy();
+}
+
+// ── Global Disk Interface (Compatible with FAT12 Driver) ─────────────
+
+U0 DISK_READ_SECTORS(U32 lba, U32 count, PU8 buffer) {
+    for (U32 i = 0; i < count; i++) {
+        ata_read_sector(lba + i, buffer + (i * 512));
+    }
+}
+
+U0 DISK_WRITE_SECTORS(U32 lba, U32 count, PU8 buffer) {
+    for (U32 i = 0; i < count; i++) {
+        ata_write_sector(lba + i, buffer + (i * 512));
+    }
+}
+
+// ── Initialization & Hardware Detection ────────────────────────────────
+
+U0 ata_init(void) {
+    // Select Primary Master drive
+    outb(ATA_PRIMARY_DRIVE_HEAD, 0xA0);
+    ata_wait_400ns();
+
+    // Clear sector count & LBA registers
+    outb(ATA_PRIMARY_SEC_COUNT, 0);
+    outb(ATA_PRIMARY_LBA_LOW,  0);
+    outb(ATA_PRIMARY_LBA_MID,  0);
+    outb(ATA_PRIMARY_LBA_HIGH, 0);
+
+    // Send IDENTIFY command
+    outb(ATA_PRIMARY_COMM_STAT, ATA_CMD_IDENTIFY);
+
+    U8 status = inb(ATA_PRIMARY_COMM_STAT);
+    if (status == 0) {
+        // No drive on Primary Master bus
+        return;
+    }
+
+    // Wait for drive to process IDENTIFY command
+    while (inb(ATA_PRIMARY_COMM_STAT) & ATA_STAT_BSY);
+
+    // Read 256 words of IDENTIFY info payload to clear drive data buffer
+    if (inb(ATA_PRIMARY_COMM_STAT) & ATA_STAT_DRQ) {
+        for (U32 i = 0; i < 256; i++) {
+            inw(ATA_PRIMARY_DATA);
+        }
+    }
+}
