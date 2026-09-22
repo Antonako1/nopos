@@ -2,10 +2,16 @@
 #define KERNEL_AH
 
 
-#include ../std/mm.ac
-#include ../std/io.ac
-#include ../std/str.ac
-#include ../std/asm.ac
+#include "../std/mm.ac"
+#include "../std/io.ac"
+#include "../std/str.ac"
+#include "../std/asm.ac"
+
+#include "./drivers/cmos/pit.ac"
+#include "./drivers/cmos/cmos.ac"
+#include "./drivers/com/com.ac"
+#include "./drivers/svga/svga.ac"
+#include "./drivers/ps2/ps2.ac"
 
 #include "./cpu/gdt.ac"
 #include "./cpu/idt.ac"
@@ -13,10 +19,6 @@
 #include "./cpu/isr.ac"
 #include "./cpu/fpu.ac"
 
-// #include ./drivers/cmos/pit.ac
-#include ./drivers/cmos/cmos.ac
-#include ./drivers/com/com.ac
-#include ./drivers/svga/svga.ac
 
 #include ./mm/e820/e820.ac
 
