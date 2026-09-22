@@ -66,6 +66,13 @@ void loop()
         // Show received data in USB serial monitor
         Serial.write(c);
 
+        if (c == '\f') {
+            lcd.clear();
+            column = 0;
+            row = 0;
+            continue;
+        }
+
         // Handle CR/LF
         if (c == '\r')
             continue;
