@@ -26,3 +26,13 @@ U0 dcomprintf(PU8 fmt, ...) {
     if(len >= 80) len = 79;
     serial_wdata(SERIAL_PORT2, buf, len);
 }
+
+U0 dcom_rl_on(){ serial_wdata(SERIAL_PORT2, "!R1", 4); }
+U0 dcom_rl_off(){ serial_wdata(SERIAL_PORT2, "!R0", 4); }
+
+U0 dcom_yl_on(){ serial_wdata(SERIAL_PORT2, "!Y1", 4); }
+U0 dcom_yl_off(){ serial_wdata(SERIAL_PORT2, "!Y0", 4); }
+
+U0 dcom_gl_on(){ serial_wdata(SERIAL_PORT2, "!G1", 4); }
+U0 dcom_gl_off(){ serial_wdata(SERIAL_PORT2, "!G0", 4); }
+
