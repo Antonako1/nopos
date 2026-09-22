@@ -1,0 +1,167 @@
+/*
+Function table:
+    U32 pages_from_bytes(U32 bytes)
+    BOOLEAN create_pg_bm()
+    boolean create_pf()
+    BOOLEAN pg_init()
+
+    
+    U32 pf_alloc_pages(U32 count)
+    VOID pf_free_pages(U32 phys_addr, U32 count)
+*/
+#define PAGE_SIZE 0x1000
+#define TOTAL_PAGES 0x100000 // 1,048,576 pages for 4GB (4GB / 4KB)
+#define PAGEFRAME_BITMAP_DATA_SZ 131072 // 128 KB bitmap (1048576 / 8)
+
+#define PAGESTATE_FREE 0
+#define PAGESTATE_ALLOCATED 1
+
+typedef struct _pg_info {
+    U32 freeMemory; // in bytes
+    U32 reservedMemory; // in bytes, holds init stages memory that cannot be used
+    U32 usedMemory; // in bytes
+    U32 pIndex; // page index (last search pos)
+    BOOLEAN initialized;
+    U32 size; // total pages
+} pg_info;
+
+pg_info g_pg;
+
+bitmap g_pg_bm;
+U8 g_pg_bm_data[PAGEFRAME_BITMAP_DATA_SZ];
+
+U32 pages_from_bytes(U32 bytes) {
+    U32 pages = bytes + PAGE_SIZE - 1;
+    if(pages == 0) return 0; // avoid division by zero
+    return pages / PAGE_SIZE;
+}
+
+BOOLEAN create_pg_bm() {
+    E820_ENTRY* e820_tbl = gkt->e820entries;
+    U32 e820_tbl_sz = gkt->e820cnt;
+    if(e820_tbl_sz == 0) return false;
+    
+    dcomprintf("[E820] Memory map (%d entries):\n", e820_tbl_sz);
+    U32 maxAddress = 0;
+    for(U32 i = 0; i < e820_tbl_sz; i++) {
+        PU32 entry_p = (PU32)&e820_tbl[i];
+        U32 base_low = entry_p[0];
+        U32 len_low = entry_p[2];
+        U32 type = entry_p[4];
+        dcomputs("b");
+        if(type == E820_TYPE_RAM) {
+            dcomputs("c");
+            U32 endAddress = base_low + len_low;
+            if (endAddress > maxAddress) maxAddress = endAddress;
+        }
+    }
+
+    U32 total_pages = pages_from_bytes(maxAddress);
+
+    U32 required_bytes = (total_pages + 7) / 8;
+    if (required_bytes > PAGEFRAME_BITMAP_DATA_SZ) return FALSE;
+
+    bm_create(required_bytes, (VOIDPTR)&g_pg_bm_data, &g_pg_bm);
+    if (!g_pg_bm.data) return FALSE;
+
+    // Default all pages to ALLOCATED
+    memset(g_pg_bm.data, 0xFF, required_bytes);
+
+    //mark e820 ram as free, this is heap and process memory
+    // Mark usable E820 RAM regions as FREE
+    for (U32 i = 0; i < e820_tbl_sz; i++) {
+        PU32 entry_p = (PU32)&e820_tbl[i];
+        U32 base_low = entry_p[0];
+        U32 len_low = entry_p[2];
+        U32 type = entry_p[4];
+
+        if (type == E820_TYPE_RAM) {
+            U32 start_page = base_low / PAGE_SIZE;
+            U32 page_count = len_low / PAGE_SIZE;
+
+            for (U32 p = start_page; p < start_page + page_count; p++) {
+                if (p < total_pages) {
+                    dcomputs("a");
+                    bm_set(&g_pg_bm, p, PAGESTATE_FREE);
+                }
+            }
+        }
+    }
+    // Mark unusable or reserved system regions (first 1MB / 256 pages) as ALLOCATED
+    for (U32 res = 0; res < 256; res++) {
+        if (res < total_pages) {
+            bm_set(&g_pg_bm, res, PAGESTATE_ALLOCATED);
+        }
+    }
+
+    return true;
+}
+
+boolean create_pf() {
+    g_pg.freeMemory = 0;
+    g_pg.usedMemory = 0;
+    g_pg.reservedMemory = 0;
+    g_pg.pIndex = 0;
+    g_pg.initialized = FALSE;
+    g_pg.size = g_pg_bm.size * 8;
+    U32 totalFrames = g_pg.size;  // number of pages
+    for (U32 i = 0; i < totalFrames; i++) {
+        U32 state = bm_get(&g_pg_bm, i);
+        if (state == PAGESTATE_FREE) {
+            g_pg.freeMemory += PAGE_SIZE;
+        } else if (state == PAGESTATE_ALLOCATED) {
+            g_pg.reservedMemory += PAGE_SIZE;
+        }
+    }
+    return TRUE;
+}
+
+BOOLEAN pg_init() {
+    if(g_pg.initialized) return TRUE;
+    if(!create_pg_bm()) return FALSE;
+    if(!create_pf()) return FALSE;
+    g_pg.initialized = TRUE;
+    return TRUE;
+}
+
+U32 pf_alloc_pages(U32 count) {
+    U32 free_found = 0;
+    U32 start_page = 0;
+
+    for (U32 i = 0; i < g_pg.size; i++) {
+        if (bm_get(&g_pg_bm, i) == PAGESTATE_FREE) {
+            if (free_found == 0) start_page = i;
+            free_found++;
+            if (free_found == count) {
+                for (U32 p = start_page; p < start_page + count; p++) {
+                    bm_set(&g_pg_bm, p, PAGESTATE_ALLOCATED);
+                }
+                g_pg.freeMemory -= (count * PAGE_SIZE);
+                g_pg.usedMemory += (count * PAGE_SIZE);
+                return start_page * PAGE_SIZE;
+            }
+        } else {
+            free_found = 0;
+        }
+    }
+    return 0;
+}
+
+VOID pf_free_pages(U32 phys_addr, U32 count) {
+    if (phys_addr == 0 || count == 0) return;
+    U32 start_page = phys_addr / PAGE_SIZE;
+
+    for (U32 p = start_page; p < start_page + count; p++) {
+        if (p < g_pg.size) {
+            if (bm_get(&g_pg_bm, p) == PAGESTATE_ALLOCATED) {
+                bm_set(&g_pg_bm, p, PAGESTATE_FREE);
+            }
+        }
+    }
+    g_pg.freeMemory += (count * PAGE_SIZE);
+    if (g_pg.usedMemory >= (count * PAGE_SIZE)) {
+        g_pg.usedMemory -= (count * PAGE_SIZE);
+    } else {
+        g_pg.usedMemory = 0;
+    }
+}
