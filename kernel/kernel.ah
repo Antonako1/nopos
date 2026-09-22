@@ -14,6 +14,8 @@
 #include "./drivers/ps2/ps2.ac"
 #include ./drivers/ata/ata.ac
 
+#include ./sys/sys.ac
+
 #include "./cpu/gdt.ac"
 #include "./cpu/idt.ac"
 #include "./cpu/irq.ac"
@@ -23,11 +25,10 @@
 #include ./mm/e820/e820.ac
 #include ./mm/bitmap/bitmap.ac
 #include ./mm/paging/pageframe.ac
+#include ./mm/heap/heap.ac
 #include ./mm/paging/paging.ac
 
 #include ./fs/fat12/fat12.ac
-
-#include ./sys/sys.ac
 
 #include ./debug/debug.ac
 
