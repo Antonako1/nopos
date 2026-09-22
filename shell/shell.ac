@@ -1,0 +1,190 @@
+/*
+Function table:
+  U0 SHELL_INIT(void);
+  U0 SHELL_PUTCHAR(U8 c, U8 fg, U8 bg);
+  U0 SHELL_PRINT(PU8 str, U8 fg, U8 bg);
+  U0 SHELL_RUN(void);
+*/
+
+#define CMD_BUF_SZ  128
+#define SHELL_FG    WHITE
+#define SHELL_BG    BLACK
+
+static U32 g_cursor_x = 0;
+static U32 g_cursor_y = 0;
+static U8  g_cmd_buf[CMD_BUF_SZ];
+static U32 g_cmd_len = 0;
+
+
+U0 SHELL_NEWLINE(void) {
+    g_cursor_x = 0;
+    g_cursor_y += FNT_CH_HEIGHT;
+    
+    if (g_cursor_y >= (gkt->vbe_mode_info.YResolution - FNT_CH_HEIGHT)) {
+        SVGA_CLEAR_SCREEN(SHELL_BG);
+        g_cursor_y = 0;
+    }
+}
+
+U0 SHELL_PUTCHAR(U8 c, U8 fg, U8 bg) {
+    if (c == '\n') {
+        SHELL_NEWLINE();
+        return;
+    }
+    if (c == '\b') {
+        if (g_cursor_x >= FNT_CH_WIDTH) {
+            g_cursor_x -= FNT_CH_WIDTH;
+            SVGA_DRAW_CHARACTER(g_cursor_x, g_cursor_y, ' ', fg, bg);
+        }
+        return;
+    }
+
+    SVGA_DRAW_CHARACTER(g_cursor_x, g_cursor_y, c, fg, bg);
+    g_cursor_x += FNT_CH_WIDTH;
+
+    if (g_cursor_x >= gkt->vbe_mode_info.XResolution - FNT_CH_WIDTH) {
+        SHELL_NEWLINE();
+    }
+}
+
+U0 SHELL_PRINT(PU8 str, U8 fg, U8 bg) {
+    while (*str) {
+        SHELL_PUTCHAR(*str++, fg, bg);
+    }
+}
+
+U0 SHELL_PROMPT(void) {
+    SHELL_PRINT("> ", LIGHT_GREEN, SHELL_BG);
+}
+
+
+static U0 SHELL_EXECUTE(PU8 cmd) {
+    SHELL_NEWLINE();
+
+    if (cmd[0] == 0) {
+        return;
+    }
+
+    if (strcmp(cmd, "help") == 0) {
+        SHELL_PRINT("Commands: help, cls, echo [text], dir, type [file]", LIGHT_CYAN, SHELL_BG);
+        SHELL_NEWLINE();
+    }
+    else if (strcmp(cmd, "cls") == 0) {
+        SVGA_CLEAR_SCREEN(SHELL_BG);
+        g_cursor_x = 0;
+        g_cursor_y = 0;
+        return;
+    }
+    else if (strncmp(cmd, "echo ", 5) == 0) {
+        SHELL_PRINT(cmd + 5, WHITE, SHELL_BG);
+        SHELL_NEWLINE();
+    }
+    else if(strcmp(cmd, "svga") == 0) {
+        SVGA_DRAW_TEST();
+    }
+    else if (strcmp(cmd, "dir") == 0) {
+        U8 sector_buf[512];
+        for (U32 i = 0; i < g_fat12_volume.root_dir_sectors; i++) {
+            DISK_READ_SECTORS(g_fat12_volume.root_dir_lba + i, 1, sector_buf);
+            FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)sector_buf;
+
+            for (U32 j = 0; j < (g_fat12_volume.bpb.BytesPerSector / 32); j++) {
+                if (entry[j].Name[0] == DIR_ENTRY_END) break;
+                if (entry[j].Name[0] == DIR_ENTRY_FREE) continue;
+                if (entry[j].Attributes & 0x08) continue;
+
+                // Print 11-char name (8.3 layout)
+                U8 fname[13];
+                for (U32 k = 0; k < 11; k++) fname[k] = entry[j].Name[k];
+                fname[11] = ' '; fname[12] = 0;
+
+                SHELL_PRINT(fname, YELLOW, SHELL_BG);
+            }
+        }
+        SHELL_NEWLINE();
+    }
+    else if (strncmp(cmd, "type ", 5) == 0) {
+        FAT12_DIR_ENTRY file_entry;
+        U8 file_buf[4096];
+        PU8 raw_filename = cmd + 5;
+        
+        // Format input to 11-byte space-padded FAT filename ("TEST.TXT" -> "TEST    TXT")
+        U8 fat_name[11];
+        memset(fat_name, ' ', 11);
+        U32 idx = 0; U32 fat_idx = 0;
+
+        while (raw_filename[idx] && raw_filename[idx] != '.' && fat_idx < 8) {
+            fat_name[fat_idx++] = raw_filename[idx++];
+        }
+        if (raw_filename[idx] == '.') {
+            idx++;
+            fat_idx = 8;
+            while (raw_filename[idx] && fat_idx < 11) {
+                fat_name[fat_idx++] = raw_filename[idx++];
+            }
+        }
+
+        if (FAT12_FIND_FILE(&g_fat12_volume, fat_name, &file_entry)) {
+            FAT12_READ_FILE(&g_fat12_volume, &file_entry, file_buf);
+            file_buf[file_entry.FileSize] = 0; // Null-terminate string
+            SHELL_PRINT(file_buf, WHITE, SHELL_BG);
+            SHELL_NEWLINE();
+        } else {
+            SHELL_PRINT("File not found.", LIGHT_RED, SHELL_BG);
+            SHELL_NEWLINE();
+        }
+    }
+    else {
+        SHELL_PRINT("Unknown command: ", LIGHT_RED, SHELL_BG);
+        SHELL_PRINT(cmd, LIGHT_RED, SHELL_BG);
+        SHELL_NEWLINE();
+    }
+}
+
+// ── Main Shell Loop ────────────────────────────────────────────────────
+
+U0 SHELL_INIT(void) {
+    SVGA_CLEAR_SCREEN(SHELL_BG);
+    g_cursor_x = 0;
+    g_cursor_y = 0;
+    g_cmd_len = 0;
+    
+    SHELL_PRINT("Simple Kernel Shell v1.0\n", LIGHT_MAGENTA, SHELL_BG);
+    SHELL_PRINT("Type 'help' for available commands.\n\n", WHITE, SHELL_BG);
+    SHELL_PROMPT();
+}
+
+U0 SHELL_RUN(void) {
+    SHELL_INIT();
+
+    while (1) {
+        if (ps2_key_ready()) {
+            U8 c = ps2_getc();
+            U8 mods = ps2_get_mods();
+            if (c == 0) continue;
+
+            if ((mods & KBD_MOD_LCTRL) && (mods & KBD_MOD_LALT) && (c == KBD_DEL)) {
+                sys_reboot();
+            }
+
+            if (c == '\n') {
+                g_cmd_buf[g_cmd_len] = 0;
+                SHELL_EXECUTE(g_cmd_buf);
+                g_cmd_len = 0;
+                SHELL_PROMPT();
+            }
+            else if (c == '\b') {
+                if (g_cmd_len > 0) {
+                    g_cmd_len--;
+                    SHELL_PUTCHAR('\b', WHITE, SHELL_BG);
+                }
+            }
+            else if (c >= ' ' && c <= '~') {
+                if (g_cmd_len < CMD_BUF_SZ - 1) {
+                    g_cmd_buf[g_cmd_len++] = c;
+                    SHELL_PUTCHAR(c, WHITE, SHELL_BG);
+                }
+            }
+        }
+    }
+}
