@@ -1,3 +1,9 @@
+/*
+Function table:
+    U0 sys_reboot(void)
+    U0 panic(PU8 msg, U32 errnum, U32 info)
+    U0 panic_if(BOOLEAN stmt, PU8 msg, U32 errnum, U32 info)
+*/
 U0 sys_reboot(void) {
     asm { CLI } // Disable interrupts to prevent ISR execution during reset
 
@@ -27,4 +33,53 @@ U0 sys_reboot(void) {
     while (1) {
         asm { HLT }
     }
+}
+
+#define PANIC_BG_COLOR   0x01 // Blue
+#define PANIC_FG_COLOR   0x0F // White
+#define PANIC_WARN_COLOR 0x0E // Yellow
+
+#define PANIC_HEAP      0x0
+#define PANIC_KERNEL    0x1
+
+U0 panic(PU8 msg, U32 errnum, U32 info) {
+    ASM { CLI }
+    pic_mask_all();
+
+    SVGA_CLEAR_SCREEN(PANIC_BG_COLOR);
+
+    SVGA_DRAW_RECTANGLE_FILLED(10, 10, 780, 40, PANIC_WARN_COLOR);
+    SVGA_DRAW_STRING(20, 20, "SYSTEM KERNEL PANIC", PANIC_BG_COLOR, PANIC_WARN_COLOR);
+
+    SVGA_DRAW_STRING(20, 70, "A fatal exception has occurred and execution has stopped.", PANIC_FG_COLOR, PANIC_BG_COLOR);
+    
+    if (msg) {
+        SVGA_DRAW_STRING(20, 100, "Reason:", PANIC_WARN_COLOR, PANIC_BG_COLOR);
+        SVGA_DRAW_STRING(90, 100, msg, PANIC_FG_COLOR, PANIC_BG_COLOR);
+    }
+
+    U8 buf[64];
+    
+    snprintf(buf, 64, "Error Code: 0x%08X", errnum);
+    SVGA_DRAW_STRING(20, 140, buf, PANIC_FG_COLOR, PANIC_BG_COLOR);
+
+    snprintf(buf, 64, "Debug Info: 0x%08X", info);
+    SVGA_DRAW_STRING(20, 160, buf, PANIC_FG_COLOR, PANIC_BG_COLOR);
+
+    SVGA_DRAW_LINE(10, 400, 790, 400, PANIC_FG_COLOR);
+    SVGA_DRAW_STRING(20, 420, "Press [DEL] to safely reboot the system.", PANIC_FG_COLOR, PANIC_BG_COLOR);
+
+    pic_unmask(1);
+    ASM { STI }
+
+    while (1) {
+        U8 k = ps2_getc();
+        if (k == KBD_DEL) {
+            sys_reboot();
+        }
+    }
+}
+
+U0 panic_if(BOOLEAN stmt, PU8 msg, U32 errnum, U32 info) {
+    if(stmt) panic(msg, errnum, info);
 }
