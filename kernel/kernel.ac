@@ -20,7 +20,9 @@ U0 _start(KERNEL_TABLE *kt) {
     asm { STI }
     while (1) {
         U8 c = ps2_getc();
-        SVGA_DRAW_CHARACTER(256,256,c,WHITE,BLUE);
+        if (c != 0) { // Don't draw unmapped keys (like raw shifts/caps)
+            SVGA_DRAW_CHARACTER(256, 256, c, WHITE, BLUE);
+        }
     }
     asm { 
         CLI    

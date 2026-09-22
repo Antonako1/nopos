@@ -251,7 +251,7 @@ U0 irq_handler(PU32 r){
         DB 0xE6, 0x20
     }
 
-    if (r[12] >= 40 && r <= 47){
+    if (r[12] >= 40 && r[12] <= 47){
         asm {
             MOV AL, 0x20
             DB 0xE6, 0xA0

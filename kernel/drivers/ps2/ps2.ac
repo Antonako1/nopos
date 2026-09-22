@@ -167,10 +167,7 @@ U0 ps2_init() {
 
 U0 kbd_handler() {
     // Read scancode from data port
-    asm {
-        IN AL, 0x60
-        MOV G_KBD_SCANCODE, AL
-    }
+    g_kbd_scancode = inb(0x60);
     U32 sc = (U32)g_kbd_scancode & 0xFF;
 
     // Extended (E0) prefix: the *next* byte is an extended scancode.
