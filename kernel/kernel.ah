@@ -1,7 +1,7 @@
 #ifndef KERNEL_AH
 #define KERNEL_AH
 
-
+#include "../std/args.ac"
 #include "../std/mm.ac"
 #include "../std/io.ac"
 #include "../std/str.ac"
@@ -12,6 +12,7 @@
 #include "./drivers/com/com.ac"
 #include "./drivers/svga/svga.ac"
 #include "./drivers/ps2/ps2.ac"
+#include ./drivers/ata/ata.ac
 
 #include "./cpu/gdt.ac"
 #include "./cpu/idt.ac"
@@ -19,9 +20,18 @@
 #include "./cpu/isr.ac"
 #include "./cpu/fpu.ac"
 
-
 #include ./mm/e820/e820.ac
+#include ./mm/bitmap/bitmap.ac
+#include ./mm/paging/pageframe.ac
+#include ./mm/paging/paging.ac
 
+#include ./fs/fat12/fat12.ac
+
+#include ./sys/sys.ac
+
+#include ./debug/debug.ac
+
+#include ../shell/shell.ac
 
 typedef struct _KERNEL_TABLE {
     E820_ENTRY e820entries[E820_MAX_ENTRIES];
