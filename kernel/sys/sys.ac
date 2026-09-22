@@ -1,0 +1,30 @@
+U0 sys_reboot(void) {
+    asm { CLI } // Disable interrupts to prevent ISR execution during reset
+
+    // 1. PS/2 Keyboard Controller Pulse Reset (Standard x86 Hardware)
+    // Wait for the 8042 input buffer to empty
+    U32 timeout = 100000;
+    while ((inb(0x64) & 0x02) && timeout--) {
+        // Spin wait
+    }
+    // Send 0xFE (Pulse Reset Line Low) to PS/2 status port
+    outb(0x64, 0xFE);
+
+    // 2. Fast Reset via PCI Reset Control Port (0xCF9)
+    outb(0xCF9, 0x02);
+    outb(0xCF9, 0x06); // Bit 1 = Reset, Bit 2 = System Reset Trigger
+
+    // 3. Fallback: Force CPU Triple Fault
+    // Load a NULL IDT (length 0) and trigger an interrupt
+    U16 null_idt[3] = { 0, 0, 0 };
+    asm {
+        lea eax, null_idt; 
+        LIDT [eax]
+        INT 3
+    }
+
+    // Ultimate safeguard halt loop
+    while (1) {
+        asm { HLT }
+    }
+}
