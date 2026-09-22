@@ -44,6 +44,9 @@ U0 sys_reboot(void) {
 
 U0 panic(PU8 msg, U32 errnum, U32 info) {
     ASM { CLI }
+    dcom_rl_on();
+    dcom_yl_off();
+    dcom_gl_off();
     pic_mask_all();
 
     SVGA_CLEAR_SCREEN(PANIC_BG_COLOR);
