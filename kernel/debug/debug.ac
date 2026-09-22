@@ -23,6 +23,6 @@ U0 dcomprintf(PU8 fmt, ...) {
     U32 len = vsnprintf(buf, 80, fmt, args);
     va_end(args);
 
-    if(len >= 80) len = 79
+    if(len >= 80) len = 79;
     serial_wdata(SERIAL_PORT2, buf, len);
 }
