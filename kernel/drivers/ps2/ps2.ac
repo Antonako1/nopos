@@ -43,6 +43,7 @@ Function table:
 #define KBD_PGDN     0x97
 #define KBD_INS      0x98
 #define KBD_DEL      0x99
+#define KBD_ESC      0x1B
 
 U8 g_kbd_map[KBD_MAP_SZ];
 U8 g_kbd_map_shift[KBD_MAP_SZ];
