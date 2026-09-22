@@ -30,37 +30,33 @@ Function table:
 #define YELLOW          0xE
 #define WHITE           0xF
 
-U32 row = 0;
-
-U32 col = 0;
-
-U8 fg = WHITE;
-
-U8 bg = BLACK;
-
+U32 io_row = 0;
+U32 io_col = 0;
+U8 io_fg = WHITE;
+U8 io_bg = BLACK;
 PU8 video_memory = 0xB8000;
 
 void putc(U8 c) {
     if (c == '\n') {
-        col = 0;
-        row++;
+        io_col = 0;
+        io_row++;
         return;
     }
 
-    U32 pos = (row * COLS + col) * 2;
-    U8 attr = (bg << 4) | fg;
+    U32 pos = (io_row * COLS + io_col) * 2;
+    U8 attr = (io_bg << 4) | io_fg;
     
     video_memory[pos]     = c;
     video_memory[pos + 1] = attr;
     
-    col++;
-    if (col >= COLS) {
-        col = 0;
-        row++;
+    io_col++;
+    if (io_col >= COLS) {
+        io_col = 0;
+        io_row++;
     }
     
-    if (row >= ROWS) {
-        row = ROWS - 1;
+    if (io_row >= ROWS) {
+        io_row = ROWS - 1;
     }
 }
 
@@ -72,16 +68,16 @@ void puts(PU8 s) {
 }
 
 void cls() {
-    U8 attr = (bg << 4) | fg;
+    U8 attr = (io_bg << 4) | io_fg;
     for(U32 i = 0; i < ROWS * COLS * 2; i += 2) {
         video_memory[i]     = ' ';
         video_memory[i + 1] = attr;
     }
-    row = 0;
-    col = 0;
+    io_row = 0;
+    io_col = 0;
 }
 
-void set_fg(U8 c)   { fg = c; }
-void set_bg(U8 c)   { bg = c; }
-void set_col(U32 c) { col = c; }
-void set_row(U32 r) { row = r; }
+void set_fg(U8 c)   { io_fg = c; }
+void set_bg(U8 c)   { io_bg = c; }
+void set_col(U32 c) { io_col = c; }
+void set_row(U32 r) { io_row = r; }

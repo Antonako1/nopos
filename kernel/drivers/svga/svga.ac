@@ -103,7 +103,7 @@ void SVGA_DRAW_PIXEL(I32 x, I32 y, U8 colour) {
 
 void SVGA_DRAW_CHARACTER(U32 x, U32 y, U8 c, U8 fg, U8 bg) {
   for(U32 i = 0; i < FNT_CH_HEIGHT; i++) {
-    U8 row = fnt8x16[c * FNT_CH_HEIGHT + i];
+    U8 row = g_fnt8x16[c * FNT_CH_HEIGHT + i];
     for(U32 j = 0; j < FNT_CH_WIDTH; j++) {
       U8 colour = (row & (0x80 >> j)) ? fg : bg;
       SVGA_DRAW_PIXEL(x + j, y + i, colour);

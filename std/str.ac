@@ -50,6 +50,7 @@ Function table:
     PU8 str_rtrim(PU8 s)
     PU8 str_trim(PU8 s)
 */
+PU8 g_strtok_save;
 
 U8 c_toupper(U8 c);
 U8 c_tolower(U8 c);
@@ -503,10 +504,9 @@ PU8 strpbrk(PU8 s, PU8 accept) {
     return 0;
 }
 
-PU8 strtok_save;
 
 PU8 strtok(PU8 s, PU8 delim) {
-    return strtok_r(s, delim, &strtok_save);
+    return strtok_r(s, delim, &g_strtok_save);
 }
 
 PU8 strtok_r(PU8 s, PU8 delim, PU8 *saveptr) {
