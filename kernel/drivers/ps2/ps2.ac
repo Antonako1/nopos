@@ -1,0 +1,291 @@
+/*
+Function table:
+    U0 ps2_init()
+    U0 kbd_handler()
+    U8 ps2_key_ready()
+    U8 ps2_getc()
+    U8 ps2_get_mods()
+*/
+
+#define KBD_MAP_SZ      128
+#define KBG_BUFFER_SZ   256
+
+// ── Modifier bits (returned by ps2_get_mods) ──────────────────────────
+#define KBD_MOD_LSHIFT  0x01
+#define KBD_MOD_RSHIFT  0x02
+#define KBD_MOD_CAPS    0x04
+#define KBD_MOD_LCTRL   0x08
+#define KBD_MOD_RCTRL   0x10
+#define KBD_MOD_LALT    0x20
+#define KBD_MOD_RALT    0x40
+
+// ── Special key codes (>= 0x80) returned by ps2_getc ──────────────────
+#define KBD_F1       0x80
+#define KBD_F2       0x81
+#define KBD_F3       0x82
+#define KBD_F4       0x83
+#define KBD_F5       0x84
+#define KBD_F6       0x85
+#define KBD_F7       0x86
+#define KBD_F8       0x87
+#define KBD_F9       0x88
+#define KBD_F10      0x89
+#define KBD_F11      0x8A
+#define KBD_F12      0x8B
+#define KBD_UP       0x90
+#define KBD_DOWN     0x91
+#define KBD_LEFT     0x92
+#define KBD_RIGHT    0x93
+#define KBD_HOME     0x94
+#define KBD_END      0x95
+#define KBD_PGUP     0x96
+#define KBD_PGDN     0x97
+#define KBD_INS      0x98
+#define KBD_DEL      0x99
+
+U8 g_kbd_map[KBD_MAP_SZ];
+U8 g_kbd_map_shift[KBD_MAP_SZ];
+U8 g_kbd_buffer[KBG_BUFFER_SZ];
+U32 g_kbd_head;
+U32 g_kbd_tail;
+U8 g_kbd_scancode;
+U8 g_kbd_mods;
+U8 g_kbd_ext;
+
+U0 kbd_push(U8 ch) {
+    U32 next = (g_kbd_head + 1) % KBG_BUFFER_SZ;
+    if (next == g_kbd_tail) return;   // ring full, drop key
+    g_kbd_buffer[g_kbd_head] = ch;
+    g_kbd_head = next;
+}
+
+U0 ps2_init() {
+    g_kbd_head = 0;
+    g_kbd_tail = 0;
+    g_kbd_mods = 0;
+    g_kbd_ext = 0;
+
+    U32 i;
+    memzero(g_kbd_map, KBD_MAP_SZ);
+    memzero(g_kbd_map_shift, KBD_MAP_SZ);
+
+    // ── Scan code set 1 -> ASCII (US layout, unshifted) ──────────────
+    g_kbd_map[0x01] = 0x1B;   // Escape
+    // top row
+    g_kbd_map[0x29] = '`';
+    g_kbd_map[0x02] = '1';
+    g_kbd_map[0x03] = '2';
+    g_kbd_map[0x04] = '3';
+    g_kbd_map[0x05] = '4';
+    g_kbd_map[0x06] = '5';
+    g_kbd_map[0x07] = '6';
+    g_kbd_map[0x08] = '7';
+    g_kbd_map[0x09] = '8';
+    g_kbd_map[0x0A] = '9';
+    g_kbd_map[0x0B] = '0';
+    g_kbd_map[0x0C] = '-';
+    g_kbd_map[0x0D] = '=';
+    // QWERTY row
+    g_kbd_map[0x10] = 'q';
+    g_kbd_map[0x11] = 'w';
+    g_kbd_map[0x12] = 'e';
+    g_kbd_map[0x13] = 'r';
+    g_kbd_map[0x14] = 't';
+    g_kbd_map[0x15] = 'y';
+    g_kbd_map[0x16] = 'u';
+    g_kbd_map[0x17] = 'i';
+    g_kbd_map[0x18] = 'o';
+    g_kbd_map[0x19] = 'p';
+    g_kbd_map[0x1A] = '[';
+    g_kbd_map[0x1B] = ']';
+    g_kbd_map[0x2B] = '\\';
+    // ASDF row
+    g_kbd_map[0x1E] = 'a';
+    g_kbd_map[0x1F] = 's';
+    g_kbd_map[0x20] = 'd';
+    g_kbd_map[0x21] = 'f';
+    g_kbd_map[0x22] = 'g';
+    g_kbd_map[0x23] = 'h';
+    g_kbd_map[0x24] = 'j';
+    g_kbd_map[0x25] = 'k';
+    g_kbd_map[0x26] = 'l';
+    g_kbd_map[0x27] = ';';
+    g_kbd_map[0x28] = '\'';
+    // ZXCV row
+    g_kbd_map[0x2C] = 'z';
+    g_kbd_map[0x2D] = 'x';
+    g_kbd_map[0x2E] = 'c';
+    g_kbd_map[0x2F] = 'v';
+    g_kbd_map[0x30] = 'b';
+    g_kbd_map[0x31] = 'n';
+    g_kbd_map[0x32] = 'm';
+    g_kbd_map[0x33] = ',';
+    g_kbd_map[0x34] = '.';
+    g_kbd_map[0x35] = '/';
+    // misc
+    g_kbd_map[0x39] = ' ';
+    g_kbd_map[0x1C] = '\n';
+    g_kbd_map[0x0E] = '\b';
+    g_kbd_map[0x0F] = '\t';
+
+    // ── Shifted map (only for keys whose meaning changes with shift) ──
+    g_kbd_map_shift[0x29] = '~';
+    g_kbd_map_shift[0x02] = '!';
+    g_kbd_map_shift[0x03] = '@';
+    g_kbd_map_shift[0x04] = '#';
+    g_kbd_map_shift[0x05] = '$';
+    g_kbd_map_shift[0x06] = '%';
+    g_kbd_map_shift[0x07] = '^';
+    g_kbd_map_shift[0x08] = '&';
+    g_kbd_map_shift[0x09] = '*';
+    g_kbd_map_shift[0x0A] = '(';
+    g_kbd_map_shift[0x0B] = ')';
+    g_kbd_map_shift[0x0C] = '_';
+    g_kbd_map_shift[0x0D] = '+';
+    // QWERTY row (letters are handled via caps/shift logic, symbols here)
+    g_kbd_map_shift[0x1A] = '{';
+    g_kbd_map_shift[0x1B] = '}';
+    g_kbd_map_shift[0x2B] = '|';
+    // ASDF row
+    g_kbd_map_shift[0x27] = ':';
+    g_kbd_map_shift[0x28] = '"';
+    // ZXCV row
+    g_kbd_map_shift[0x33] = '<';
+    g_kbd_map_shift[0x34] = '>';
+    g_kbd_map_shift[0x35] = '?';
+
+    // ── Enable keyboard interface + keyboard (8042) ───────────────────
+    asm {
+        MOV AL, 0xAE
+        OUT 0x64, AL
+        MOV AL, 0xF4
+        OUT 0x60, AL
+    }
+
+    pic_unmask(1);
+}
+
+U0 kbd_handler() {
+    // Read scancode from data port
+    asm {
+        IN AL, 0x60
+        MOV G_KBD_SCANCODE, AL
+    }
+    U32 sc = (U32)g_kbd_scancode & 0xFF;
+
+    // Extended (E0) prefix: the *next* byte is an extended scancode.
+    if (sc == 0xE0) {
+        g_kbd_ext = 1;
+        return;
+    }
+
+    U32 make = 1;
+    if (sc & 0x80) {
+        make = 0;
+        sc = sc & 0x7F;
+    }
+
+    // ── Modifiers ──────────────────────────────────────────────────────
+    if (sc == 0x2A) {                       // left shift
+        if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_LSHIFT;
+        else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_LSHIFT;
+        return;
+    }
+    if (sc == 0x36) {                       // right shift
+        if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_RSHIFT;
+        else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_RSHIFT;
+        return;
+    }
+    if (sc == 0x1D) {                       // ctrl (left, or right via E0)
+        if (g_kbd_ext) {
+            if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_RCTRL;
+            else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_RCTRL;
+        } else {
+            if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_LCTRL;
+            else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_LCTRL;
+        }
+        g_kbd_ext = 0;
+        return;
+    }
+    if (sc == 0x38) {                       // alt (left, or right via E0)
+        if (g_kbd_ext) {
+            if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_RALT;
+            else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_RALT;
+        } else {
+            if (make) g_kbd_mods = g_kbd_mods | KBD_MOD_LALT;
+            else      g_kbd_mods = g_kbd_mods & ~KBD_MOD_LALT;
+        }
+        g_kbd_ext = 0;
+        return;
+    }
+    if (sc == 0x3A) {                       // caps lock (toggles on make)
+        if (make) {
+            if (g_kbd_mods & KBD_MOD_CAPS) g_kbd_mods = g_kbd_mods & ~KBD_MOD_CAPS;
+            else                            g_kbd_mods = g_kbd_mods | KBD_MOD_CAPS;
+        }
+        return;
+    }
+
+    // ── Extended keys (E0-prefixed) ────────────────────────────────────
+    if (g_kbd_ext) {
+        g_kbd_ext = 0;
+        if (make) {
+            if (sc == 0x48)      kbd_push(KBD_UP);
+            else if (sc == 0x50) kbd_push(KBD_DOWN);
+            else if (sc == 0x4B) kbd_push(KBD_LEFT);
+            else if (sc == 0x4D) kbd_push(KBD_RIGHT);
+            else if (sc == 0x47) kbd_push(KBD_HOME);
+            else if (sc == 0x4F) kbd_push(KBD_END);
+            else if (sc == 0x49) kbd_push(KBD_PGUP);
+            else if (sc == 0x51) kbd_push(KBD_PGDN);
+            else if (sc == 0x52) kbd_push(KBD_INS);
+            else if (sc == 0x53) kbd_push(KBD_DEL);
+            else if (sc == 0x1C) kbd_push('\n');   // keypad enter
+            else if (sc == 0x35) kbd_push('/');    // keypad slash
+        }
+        return;
+    }
+
+    // Non-modifier key-up (break) codes carry no data; ignore them.
+    if (make == 0) return;
+
+    // ── Function keys ──────────────────────────────────────────────────
+    if (sc >= 0x3B && sc <= 0x44) { kbd_push(KBD_F1 + (sc - 0x3B)); return; }
+    if (sc == 0x57) { kbd_push(KBD_F11); return; }
+    if (sc == 0x58) { kbd_push(KBD_F12); return; }
+
+    // ── Printable keys ─────────────────────────────────────────────────
+    U8 ch = (U8)g_kbd_map[sc];
+    if (ch == 0) return;
+
+    U32 shift = 0;
+    if (g_kbd_mods & (KBD_MOD_LSHIFT | KBD_MOD_RSHIFT)) shift = 1;
+    U32 caps = 0;
+    if (g_kbd_mods & KBD_MOD_CAPS) caps = 1;
+
+    if (ch >= 'a' && ch <= 'z') {
+        // XOR: uppercase when exactly one of shift/caps is active.
+        if (shift != caps) ch = ch - ('a' - 'A');
+    } else if (shift) {
+        U8 sh = (U8)g_kbd_map_shift[sc];
+        if (sh != 0) ch = sh;
+    }
+
+    kbd_push(ch);
+}
+
+U8 ps2_key_ready(){
+    if (g_kbd_head == g_kbd_tail) return 0;
+    return 1;
+}
+
+U8 ps2_getc(){
+    if (g_kbd_head == g_kbd_tail) return 0;
+    U8 ch = (U8)g_kbd_buffer[g_kbd_tail];
+    g_kbd_tail = (g_kbd_tail + 1) % KBG_BUFFER_SZ;
+    return ch;
+}
+
+U8 ps2_get_mods(){
+    return g_kbd_mods;
+}
