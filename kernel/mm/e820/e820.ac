@@ -7,3 +7,7 @@ typedef struct _E820_ENTRY {
 } E820_ENTRY;
 
 #define E820_MAX_ENTRIES 32
+#define E820_TYPE_RAM               0x01
+#define E820_TYPE_RESERVED          0x02
+#define E820_TYPE_ACPI_RECLAIMABLE  0x03
+#define E820_TYPE_ACPI_NVS          0x04
