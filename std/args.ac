@@ -1,7 +1,9 @@
 U32 putch(PU8 buf, U32 size, U32 pos, U8 c) {
-    if (size > 0 && pos < size - 1) {
-        PU8 p = buf;
-        p[pos] = c;
+    if (size > 0) {
+        if (pos < size - 1) {
+            PU8 p = buf;
+            p[pos] = c;
+        }
     }
     return pos + 1;
 }
@@ -40,11 +42,11 @@ U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper, U32 wid
 }
 
 U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
-    return 0;
     U32 pos = 0;
     U32 i   = 0;
-    while (fmt[i] != 0) {
-        U8 c = fmt[i];
+    PU8 f = fmt;
+    while (f[i] != 0) {
+        U8 c = f[i];
         if (c != '%') {
             pos = putch(buf, size, pos, c);
             i = i + 1;
@@ -56,17 +58,17 @@ U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
         U8 pad = ' ';
         U32 width = 0;
 
-        if (fmt[i] == '0') {
+        if (f[i] == '0') {
             pad = '0';
             i = i + 1;
         }
 
-        while (fmt[i] >= '0' && fmt[i] <= '9') {
-            width = width * 10 + (U32)(fmt[i] - '0');
+        while (f[i] >= '0' && f[i] <= '9') {
+            width = width * 10 + (U32)(f[i] - '0');
             i = i + 1;
         }
 
-        U8 spec = fmt[i];
+        U8 spec = f[i];
         if (spec != 0) {
             i = i + 1;
         }
