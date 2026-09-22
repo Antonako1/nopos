@@ -49,7 +49,7 @@ echo "==> [2/4] Assemble second stage"
 "$ASTRAC" asm "$SECOND_STAGE_WIN" bits 16 org 7E00 warn 2
 
 echo "==> [3/4] Compile kernel"
-"$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug verbose
+"$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug
 
 echo "==> [4/4] Create FAT12 floppy image"
 
