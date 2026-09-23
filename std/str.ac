@@ -58,6 +58,8 @@ U8 c_toupper(U8 c);
 U8 c_tolower(U8 c);
 I32 atoin(PU8 s, U32 base);
 PU8 strtok_r(PU8 s, PU8 delim, PU8 *saveptr);
+PU8 itoa(I32 value, PU8 buf, U32 base);
+PU8 itoa_u(U32 val, PU8 buf, U32 base);
 
 U32 strlen(PU8 s) {
     U32 ln = 0;
@@ -322,6 +324,14 @@ I32 atoin(PU8 s, U32 base) {
 PU8 itoa(I32 value, PU8 buf, U32 base)
 {
     PU8 p;
+    I32 val;
+    asm {
+        MOV EAX, value
+        MOV val, EAX
+        MOV EAX, buf
+        MOV p, EAX
+    }
+    PU8 orig_p = p;
     PU8 a;
     PU8 b;
     U8 t;
@@ -330,40 +340,33 @@ PU8 itoa(I32 value, PU8 buf, U32 base)
     U32 d;
     U32 neg;
 
-    if (buf == 0)
-        return 0;
+    if (!p)
+        return NULLPTR;
 
     if (base < 2 || base > 36)
     {
-        buf[0] = 0;
-        return buf;
+        p[0] = 0;
+        return orig_p;
     }
 
-    p = buf;
     neg = 0;
 
-    if (value < 0 && base == 10)
+    if (val < 0 && base == 10)
     {
         neg = 1;
-
-        /*
-         * Convert before negating so I32_MIN works:
-         *
-         * -2147483648 -> 2147483648U
-         */
-        v = (U32)(-(value + 1));
+        v = (U32)(-(val + 1));
         v = v + 1;
     }
     else
     {
-        v = (U32)value;
+        v = (U32)val;
     }
 
     if (v == 0)
     {
-        buf[0] = '0';
-        buf[1] = 0;
-        return buf;
+        p[0] = '0';
+        p[1] = 0;
+        return orig_p;
     }
 
     while (v != 0)
@@ -394,7 +397,7 @@ PU8 itoa(I32 value, PU8 buf, U32 base)
     /*
      * Reverse string.
      */
-    a = buf;
+    a = orig_p;
     b = p - 1;
 
     while (a < b)
@@ -407,7 +410,7 @@ PU8 itoa(I32 value, PU8 buf, U32 base)
         b--;
     }
 
-    return buf;
+    return orig_p;
 }
 
 U8 c_toupper(U8 c) {
@@ -596,10 +599,84 @@ PU8 str_trim(PU8 s) {
     return p;
 }
 
+U0 str_buffer_putch(U8 c, VOIDPTR ctx) {
+    PU32 p_out = (PU32)ctx;
+    PU8 out_ptr = (PU8)(*p_out);
+    *out_ptr = c;
+    *p_out = (U32)(out_ptr + 1);
+}
+
+U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
+    if (!buf) return 0;
+    PU8 dst = buf;
+    vformat((VOIDPTR)str_buffer_putch, (VOIDPTR)&dst, fmt, args);
+    *dst = 0;
+    return (U32)(dst - buf);
+}
+
+U32 sprintf(PU8 buf, PU8 fmt, ...) {
+    if (!buf) return 0;
+    va_list args;
+    va_start(args, fmt);
+    PU8 dst = buf;
+    vformat((VOIDPTR)str_buffer_putch, (VOIDPTR)&dst, fmt, args);
+    *dst = 0;
+    va_end(args);
+    return (U32)(dst - buf);
+}
+
 U32 snprintf(PU8 buf, U32 size, PU8 fmt, ...) {
+    if (!buf) return 0;
     va_list args;
     va_start(args, fmt);
     U32 n = vsnprintf(buf, size, fmt, args);
     va_end(args);
     return n;
+}
+
+PU8 itoa_u(U32 num, PU8 buf, U32 base) {
+    PU8 p;
+    U32 v;
+    asm {
+        MOV EAX, num
+        MOV v, EAX
+        MOV EAX, buf
+        MOV p, EAX
+    }
+    if (!p) {
+        return NULLPTR;
+    }
+    if (base < 2) {
+        *p = 0;
+        return p;
+    }
+    if (base > 36) {
+        *p = 0;
+        return p;
+    }
+    if (v == 0) {
+        *p = '0';
+        *(p + 1) = 0;
+        return p;
+    }
+    U8 tmp[36];
+    I32 i = 0;
+    while (v != 0) {
+        U32 rem = v % base;
+        if (rem < 10) {
+            *(tmp + i) = (U8)('0' + rem);
+        } else {
+            *(tmp + i) = (U8)('a' + (rem - 10));
+        }
+        i = i + 1;
+        v = v / base;
+    }
+    I32 j = 0;
+    while (i > 0) {
+        i = i - 1;
+        *(p + j) = *(tmp + i);
+        j = j + 1;
+    }
+    *(p + j) = 0;
+    return p;
 }

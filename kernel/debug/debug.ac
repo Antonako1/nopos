@@ -13,18 +13,21 @@ U0 dcominit() {
 U0 dcomputs(PU8 s) {
     serial_wdata(SERIAL_PORT2, s, strlen(s));
 }
+
 U0 dcomnputs(PU8 s, U32 n) {
     serial_wdata(SERIAL_PORT2, s, n);
 }
+
+static U0 dcom_putch(U8 c, VOID *ctx) {
+    (VOID)ctx;
+    serial_wb(SERIAL_PORT2, c);
+}
+
 U0 dcomprintf(PU8 fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    U8 buf[80]; // 20*4=80, display size
-    U32 len = vsnprintf(buf, 80, fmt, args);
+    vformat((VOIDPTR)dcom_putch, NULLPTR, fmt, args);
     va_end(args);
-
-    if(len >= 80) len = 79;
-    serial_wdata(SERIAL_PORT2, buf, len);
 }
 
 U0 dcom_rl_on(){ serial_wdata(SERIAL_PORT2, "!R1", 4); }
@@ -35,4 +38,3 @@ U0 dcom_yl_off(){ serial_wdata(SERIAL_PORT2, "!Y0", 4); }
 
 U0 dcom_gl_on(){ serial_wdata(SERIAL_PORT2, "!G1", 4); }
 U0 dcom_gl_off(){ serial_wdata(SERIAL_PORT2, "!G0", 4); }
-

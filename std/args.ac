@@ -1,116 +1,219 @@
-U32 putch(PU8 buf, U32 size, U32 pos, U8 c) {
-    if (size > 0) {
-        if (pos < size - 1) {
-            PU8 p = buf;
-            p[pos] = c;
-        }
-    }
-    return pos + 1;
+/*
+ * std/args.ac — Variable argument formatted output (vformat) and putch primitives
+ */
+
+U0 default_putch(U8 c, VOIDPTR ctx) {
+    PU32 p_out = (PU32)ctx;
+    PU8 out_ptr = (PU8)(*p_out);
+    *out_ptr = c;
+    *p_out = (U32)(out_ptr + 1);
 }
 
-U32 emit_uint(PU8 buf, U32 size, U32 pos, U32 val, U32 base, BOOL upper, U32 width, U8 pad) {
-    U8  tmp[32];
-    U32 n = 0;
-    if (val == 0) {
-        tmp[n] = '0';
-        n = 1;
-    } else {
-        while (val != 0) {
-            U32 d = val % base;
-            if (d < 10) {
-                tmp[n] = (U8)(d + '0');
-            } else if (upper) {
-                tmp[n] = (U8)(d - 10 + 'A');
-            } else {
-                tmp[n] = (U8)(d - 10 + 'a');
-            }
-            n = n + 1;
-            val = val / base;
-        }
+U0 vformat(U0 (*putch)(U8, VOIDPTR), VOIDPTR ctx, PU8 fmt, va_list args) {
+    if (!putch) {
+        putch = default_putch;
     }
 
-    while (n < width) {
-        tmp[n] = pad;
-        n = n + 1;
-    }
-
-    while (n > 0) {
-        n = n - 1;
-        pos = putch(buf, size, pos, tmp[n]);
-    }
-    return pos;
-}
-
-U32 vsnprintf(PU8 buf, U32 size, PU8 fmt, va_list args) {
-    U32 pos = 0;
-    U32 i   = 0;
-    PU8 f = fmt;
-    while (f[i] != 0) {
-        U8 c = f[i];
-        if (c != '%') {
-            pos = putch(buf, size, pos, c);
-            i = i + 1;
+    while (*fmt != 0) {
+        if (*fmt != '%') {
+            putch(*fmt, ctx);
+            fmt = fmt + 1;
             continue;
         }
 
-        i = i + 1; // skip '%'
-
-        U8 pad = ' ';
-        U32 width = 0;
-
-        if (f[i] == '0') {
-            pad = '0';
-            i = i + 1;
+        fmt = fmt + 1;
+        if (*fmt == 0) {
+            break;
         }
 
-        while (f[i] >= '0' && f[i] <= '9') {
-            width = width * 10 + (U32)(f[i] - '0');
-            i = i + 1;
-        }
+        I32 width = 0;
+        I32 precision = -1;
+        BOOLEAN pad_zero = FALSE;
+        BOOLEAN left_align = FALSE;
+        BOOLEAN is_negative = FALSE;
+        BOOLEAN force_sign = FALSE;
 
-        U8 spec = f[i];
-        if (spec != 0) {
-            i = i + 1;
-        }
-
-        if (spec == '%') {
-            pos = putch(buf, size, pos, '%');
-        } else if (spec == 'c') {
-            U8 ch = (U8)va_arg(args, U32);
-            pos = putch(buf, size, pos, ch);
-        } else if (spec == 's') {
-            PU8 s = va_arg(args, PU8);
-            U32 j = 0;
-            while (s[j] != 0) {
-                pos = putch(buf, size, pos, s[j]);
-                j = j + 1;
+        // Flags: consume '-', '0', '+'
+        while (*fmt == '-' || *fmt == '0' || *fmt == '+') {
+            if (*fmt == '-') {
+                left_align = TRUE;
+            } else if (*fmt == '0') {
+                pad_zero = TRUE;
+            } else if (*fmt == '+') {
+                force_sign = TRUE;
             }
-        } else if (spec == 'x') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, FALSE, width, pad);
-        } else if (spec == 'X') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 16, TRUE, width, pad);
-        } else if (spec == 'u') {
-            pos = emit_uint(buf, size, pos, va_arg(args, U32), 10, FALSE, width, pad);
-        } else if (spec == 'd') {
-            I32 val = (I32)va_arg(args, U32);
-            if (val < 0) {
-                pos = putch(buf, size, pos, '-');
-                val = -val;
-                if (width > 0) {
-                    width = width - 1;
+            fmt = fmt + 1;
+        }
+
+        // Width
+        if (*fmt == '*') {
+            width = (I32)va_arg(args, U32);
+            fmt = fmt + 1;
+        } else {
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = width * 10 + (I32)(*fmt - '0');
+                fmt = fmt + 1;
+            }
+        }
+
+        // Precision
+        if (*fmt == '.') {
+            fmt = fmt + 1;
+            if (*fmt == '*') {
+                precision = (I32)va_arg(args, U32);
+                fmt = fmt + 1;
+            } else {
+                precision = 0;
+                while (*fmt >= '0' && *fmt <= '9') {
+                    precision = precision * 10 + (I32)(*fmt - '0');
+                    fmt = fmt + 1;
                 }
             }
-            pos = emit_uint(buf, size, pos, (U32)val, 10, FALSE, width, pad);
         }
-    }
 
-    if (size > 0) {
-        PU8 p = buf;
-        if (pos >= size) {
-            p[size - 1] = 0;
+        if (*fmt == '%') {
+            putch('%', ctx);
+            fmt = fmt + 1;
+        } else if (*fmt == 'c') {
+            U8 c = (U8)va_arg(args, U32);
+            if (!left_align) {
+                for (I32 i = 1; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            putch(c, ctx);
+            if (left_align) {
+                for (I32 i = 1; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            fmt = fmt + 1;
+        } else if (*fmt == 's') {
+            PU8 s = va_arg(args, PU8);
+            if (!s) {
+                s = (PU8)"(null)";
+            }
+
+            I32 len = 0;
+            while (*(s + len) != 0 && (precision < 0 || len < precision)) {
+                len = len + 1;
+            }
+
+            if (!left_align) {
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            for (I32 i = 0; i < len; i = i + 1) {
+                putch(*(s + i), ctx);
+            }
+            if (left_align) {
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            fmt = fmt + 1;
+        } else if (*fmt == 'd' || *fmt == 'i' || *fmt == 'u' || *fmt == 'x' || *fmt == 'X') {
+            U32 num_val = 0;
+            U8 buf[64];
+            if (*fmt == 'd' || *fmt == 'i') {
+                I32 sval = (I32)va_arg(args, U32);
+                if (sval < 0) {
+                    is_negative = TRUE;
+                    num_val = (U32)(-sval);
+                } else {
+                    num_val = (U32)sval;
+                }
+                itoa_u(num_val, buf, 10);
+            } else if (*fmt == 'u') {
+                num_val = va_arg(args, U32);
+                itoa_u(num_val, buf, 10);
+            } else {
+                num_val = va_arg(args, U32);
+                itoa_u(num_val, buf, 16);
+                if (*fmt == 'X') {
+                    PU8 p = buf;
+                    while (*p != 0) {
+                        if (*p >= 'a' && *p <= 'z') {
+                            *p = (U8)(*p - 32);
+                        }
+                        p = p + 1;
+                    }
+                }
+            }
+
+            I32 len = 0;
+            while (*(buf + len) != 0) {
+                len = len + 1;
+            }
+            if (is_negative) {
+                len = len + 1;
+            } else if (force_sign) {
+                len = len + 1;
+            }
+
+            if (!left_align) {
+                if (pad_zero && is_negative) {
+                    putch('-', ctx);
+                } else if (pad_zero && force_sign) {
+                    putch('+', ctx);
+                }
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(pad_zero ? '0' : ' ', ctx);
+                }
+                if (!pad_zero && is_negative) {
+                    putch('-', ctx);
+                } else if (!pad_zero && force_sign && !is_negative) {
+                    putch('+', ctx);
+                }
+            } else if (is_negative) {
+                putch('-', ctx);
+            } else if (force_sign) {
+                putch('+', ctx);
+            }
+
+            PU8 pbuf = buf;
+            while (*pbuf != 0) {
+                putch(*pbuf, ctx);
+                pbuf = pbuf + 1;
+            }
+            if (left_align) {
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            fmt = fmt + 1;
+        } else if (*fmt == 'p') {
+            U32 ptr = va_arg(args, U32);
+            U8 buf[32];
+            itoa_u(ptr, buf, 16);
+            I32 len = 0;
+            while (*(buf + len) != 0) {
+                len = len + 1;
+            }
+            len = len + 2;
+            if (!left_align) {
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            putch('0', ctx);
+            putch('x', ctx);
+            PU8 pptr = buf;
+            while (*pptr != 0) {
+                putch(*pptr, ctx);
+                pptr = pptr + 1;
+            }
+            if (left_align) {
+                for (I32 i = len; i < width; i = i + 1) {
+                    putch(' ', ctx);
+                }
+            }
+            fmt = fmt + 1;
         } else {
-            p[pos] = 0;
+            putch('%', ctx);
+            putch(*fmt, ctx);
+            fmt = fmt + 1;
         }
     }
-    return pos;
 }
