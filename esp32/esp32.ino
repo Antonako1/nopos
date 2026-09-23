@@ -1,5 +1,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 #define SERIAL_RX 16
 #define SERIAL_TX 17
@@ -8,8 +10,13 @@
 #define LCD_SCL 22
 
 #define LCD_ADDRESS 0x27
-#define LCD_COLS 16
-#define LCD_ROWS 2
+#define LCD_COLS 20
+#define LCD_ROWS 4
+
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDRESS 0x3C
 
 #define BAUD_RATE 115200
 
@@ -26,13 +33,16 @@
 
 // Message Buffer Configuration
 #define MAX_BUFFER_LINES 50
-#define LINE_LENGTH 16
+#define LINE_LENGTH 20
 
 LiquidCrystal_I2C lcd(
     LCD_ADDRESS,
     LCD_COLS,
     LCD_ROWS
 );
+
+Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
+bool oledFound = false;
 
 HardwareSerial RS232(2);
 
@@ -86,6 +96,65 @@ void appendCharToBuffer(char c) {
     currentWriteCol++;
 }
 
+void updateOLEDDisplay(bool rxActive = false) {
+    if (!oledFound) return;
+
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+
+    // Header bar
+    oled.setCursor(0, 0);
+    oled.print("NopOS Monitor");
+    if (rxActive) {
+        oled.setCursor(92, 0);
+        oled.print("[RX]");
+    }
+
+    oled.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+
+    // Buffer statistics
+    oled.setCursor(0, 14);
+    oled.print("Buffer: ");
+    oled.print(totalLines);
+    oled.print(" / ");
+    oled.print(MAX_BUFFER_LINES);
+
+    // Scroll Position
+    oled.setCursor(0, 26);
+    oled.print("Top Line: ");
+    oled.print(lastDisplayTopLine >= 0 ? lastDisplayTopLine + 1 : 0);
+
+    // LED States
+    oled.setCursor(0, 38);
+    bool rOn = digitalRead(LED_RED_PIN);
+    bool yOn = digitalRead(LED_YELLOW_PIN);
+    bool gOn = digitalRead(LED_GREEN_PIN);
+
+    oled.print("LEDs: R:");
+    oled.print(rOn ? "1" : "0");
+    oled.print(" Y:");
+    oled.print(yOn ? "1" : "0");
+    oled.print(" G:");
+    oled.print(gOn ? "1" : "0");
+
+    // Potentiometer Scroll Progress Bar
+    int maxTopLine = totalLines - LCD_ROWS;
+    int pct = 0;
+    if (maxTopLine > 0 && lastDisplayTopLine >= 0) {
+        pct = (lastDisplayTopLine * 100) / maxTopLine;
+        if (pct > 100) pct = 100;
+    }
+
+    oled.drawRect(0, 52, 128, 10, SSD1306_WHITE);
+    int fillWidth = map(pct, 0, 100, 0, 124);
+    if (fillWidth > 0) {
+        oled.fillRect(2, 54, fillWidth, 6, SSD1306_WHITE);
+    }
+
+    oled.display();
+}
+
 void processCommand(const char* cmd) {
     // Check LED commands: !R1, !R0, !Y1, !Y0, !G1, !G0
     if (strcmp(cmd, "!R1") == 0 || strcmp(cmd, "!RED:ON") == 0) {
@@ -110,10 +179,53 @@ void processCommand(const char* cmd) {
         clearBuffer();
         Serial.println("[ESP32] BUFFER & LCD CLEARED");
     }
+    updateOLEDDisplay();
+}
+
+int readPotentiometerSmooth(int pin) {
+    long sum = 0;
+    for (int i = 0; i < 16; i++) {
+        sum += analogRead(pin);
+    }
+    return (int)(sum / 16);
+}
+
+void populateTestBuffer() {
+    clearBuffer();
+    const char* sampleLines[] = {
+        "01: NopOS Boot OK",
+        "02: Testing Scroll",
+        "03: Turn Pot (G34)",
+        "04: Line 04 Hello",
+        "05: Line 05 World",
+        "06: Line 06 ESP32",
+        "07: Line 07 System",
+        "08: Line 08 Buffer",
+        "09: Line 09 Active",
+        "10: Line 10 Serial",
+        "11: Line 11 115200",
+        "12: Line 12 Ready",
+        "13: Line 13 LED:R25",
+        "14: Line 14 LED:Y26",
+        "15: Line 15 LED:G27",
+        "16: Line 16 BTN:C23"
+    };
+    int count = sizeof(sampleLines) / sizeof(sampleLines[0]);
+    for (int i = 0; i < count; i++) {
+        addNewLine();
+        int lineIdx = (totalLines - 1) % MAX_BUFFER_LINES;
+        strncpy(msgBuffer[lineIdx], sampleLines[i], LINE_LENGTH);
+        int len = strlen(sampleLines[i]);
+        for (int j = len; j < LINE_LENGTH; j++) {
+            msgBuffer[lineIdx][j] = ' ';
+        }
+        msgBuffer[lineIdx][LINE_LENGTH] = '\0';
+    }
 }
 
 void updateLCDDisplay(bool forceRedraw = false) {
     if (totalLines == 0) {
+        updateOLEDDisplay();
         return;
     }
 
@@ -122,11 +234,11 @@ void updateLCDDisplay(bool forceRedraw = false) {
         maxTopLine = 0;
     }
 
-    // Read potentiometer value (0 - 4095)
-    int adcVal = analogRead(POT_PIN);
+    // Read potentiometer value with 16-sample software averaging
+    int adcVal = readPotentiometerSmooth(POT_PIN);
 
-    // Apply hysteresis / deadband to ADC to prevent flickering
-    if (!forceRedraw && abs(adcVal - lastRawADC) < 35 && lastDisplayTopLine != -1) {
+    // Apply hysteresis / deadband to ADC to prevent flickering without capacitors
+    if (!forceRedraw && abs(adcVal - lastRawADC) < 45 && lastDisplayTopLine != -1) {
         adcVal = lastRawADC;
     } else {
         lastRawADC = adcVal;
@@ -151,10 +263,12 @@ void updateLCDDisplay(bool forceRedraw = false) {
                 lineText[LINE_LENGTH] = '\0';
                 lcd.print(lineText);
             } else {
-                lcd.print("                ");
+                lcd.print("                    "); // 20 spaces
             }
         }
     }
+
+    updateOLEDDisplay();
 }
 
 void checkButton() {
@@ -163,6 +277,7 @@ void checkButton() {
         if (now - lastButtonPress > 250) { // 250ms debouncing
             lastButtonPress = now;
             clearBuffer();
+            updateOLEDDisplay();
             Serial.println("[ESP32] Button Pressed -> LCD & Buffer Cleared!");
         }
     }
@@ -188,21 +303,36 @@ void setup()
     // Initialize Buffer
     clearBuffer();
 
-    // I2C LCD
+    // I2C Bus for LCD & OLED (SDA=21, SCL=22)
     Wire.begin(
         LCD_SDA,
         LCD_SCL
     );
 
+    // I2C LCD Initialization
     lcd.init();
     lcd.backlight();
     lcd.clear();
 
     lcd.setCursor(0, 0);
-    lcd.print("NopOS Serial");
+    lcd.print("NopOS Serial RX");
 
     lcd.setCursor(0, 1);
-    lcd.print("115200 8N1");
+    lcd.print("115200 8N1 (20x4)");
+
+    // 0.96" OLED SSD1306 Initialization (Address 0x3C)
+    if (oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+        oledFound = true;
+        oled.clearDisplay();
+        oled.setTextSize(1);
+        oled.setTextColor(SSD1306_WHITE);
+        oled.setCursor(0, 10);
+        oled.println("NopOS System Dash");
+        oled.println("OLED 0x3C Ready!");
+        oled.display();
+    } else {
+        Serial.println("[ESP32] Warning: SSD1306 OLED not found at 0x3C");
+    }
 
     // MAX3232 UART
     RS232.begin(
@@ -214,9 +344,13 @@ void setup()
 
     Serial.println("NopOS serial receiver started");
     Serial.println("115200 8N1 (Scroll: POT34, Clear: BTN23, LEDs: R25, Y26, G27)");
-    
+
     delay(1000);
     lcd.clear();
+
+    // Populate 16 sample lines on boot so potentiometer scrolling can be tested immediately
+    populateTestBuffer();
+    updateLCDDisplay(true);
 }
 
 void loop()
@@ -273,7 +407,7 @@ void loop()
         receivedNewData = true;
     }
 
-    // Check potentiometer and update display
+    // Check potentiometer and update displays
     updateLCDDisplay(receivedNewData);
 
     delay(10);

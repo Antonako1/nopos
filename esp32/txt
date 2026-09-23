@@ -16,3 +16,13 @@ arduino-cli monitor \
 usbipd list
 sudo usbipd bind --busid 1-3
 usbipd attach --wsl --busid 1-3
+
+
+gpio 22 -> d63
+gpio 21 -> d64
+
+l2c scl -> e63
+l2c sda -> e63
+
+oled scl -> a63
+oled sda -> a64
