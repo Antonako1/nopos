@@ -1,70 +1,261 @@
+#ifndef HEAP_AC
+#define HEAP_AC
+
 /*
-Function table:
-    void validate_block(KHeapBlock* block
-    BOOLEAN heap_init(U32 pageNum)
-*/
+ * kernel/mm/heap/heap.ac — Dynamic Kernel Heap Allocator
+ */
 
-#define DEFAULT_HEAP_PAGES (65536 / PAGE_SIZE)
+#ifndef NULL
+#define NULL 0
+#endif
+#ifndef null
+#define null 0
+#endif
 
-// Magic values help detect heap corruption, like buffer overflows or invalid frees.
+#define DEFAULT_HEAP_PAGES 64 // 256 KB Initial Heap
+
 #define KHEAP_BLOCK_MAGIC0 0xDEADBEEF
 #define KHEAP_BLOCK_MAGIC1 0xFEEBDAED
 #define KHEAP_BLOCK_MAGIC2 0xDABBADAF
 
 typedef struct _heap_block {
-    U32 magic0;       // Magic value to validate block integrity
-    U32 size;         // User-requested size (payload size)
-    U32 magic1;       // Another magic value for extra validation
-    U32 real_size;    // Allocated payload size (after alignment)
-    BOOLEAN free;     // Flag indicating if the block is free
-    U32 magic2;       // A third magic value
+    U32 magic0;                 // 0xDEADBEEF
+    U32 size;                   // Requested payload size
+    U32 magic1;                 // 0xFEEBDAED
+    U32 real_size;              // Allocated payload capacity (8-byte aligned)
+    BOOLEAN free;               // TRUE if available
+    U32 magic2;                 // 0xDABBADAF
+    struct _heap_block *prev;   // Linked list previous block
+    struct _heap_block *next;   // Linked list next block
 } heap_block;
 
-/// @brief Structure holding information about the kernel heap.
 typedef struct _heap {
-    U32 totalSize;      // Total size of the heap region in bytes
-    U32 usedSize;       // Sum of real_size of all used blocks
-    U32 freeSize;       // Sum of real_size of all free blocks
-    VOIDPTR baseAddress;  // Start address of the heap
-    VOIDPTR currentPtr;   // Pointer for the next-fit search start
+    U32 totalSize;              // Total heap bytes under management
+    U32 usedSize;               // Total bytes allocated to callers
+    U32 freeSize;               // Total bytes available for allocation
+    VOIDPTR baseAddress;        // Base physical memory address
+    heap_block *firstBlock;     // Pointer to first heap block header
     BOOLEAN initialized;
     U32 heap_init_pages;
 } heap_info;
 
-#define KHEAP_ALIGN 8
-// #define ALIGN_UP_U32(x, a) ( (((U32)(x)) + ((a) - 1u)) & ~((a) - 1u) )
+heap_info heap;
 
-void validate_block(KHeapBlock* block) {
+U0 validate_block(heap_block *block) {
+    if (!block) panic("validate_block: NULL pointer", PANIC_HEAP, 0);
     panic_if(block->magic0 != KHEAP_BLOCK_MAGIC0, "heap_block magic0 corruption", PANIC_HEAP, (U32)block);
     panic_if(block->magic1 != KHEAP_BLOCK_MAGIC1, "heap_block magic1 corruption", PANIC_HEAP, (U32)block);
     panic_if(block->magic2 != KHEAP_BLOCK_MAGIC2, "heap_block magic2 corruption", PANIC_HEAP, (U32)block);
 }
 
-heap_info heap;
-
 BOOLEAN heap_init(U32 pageNum) {
-    if(heap.initialized) return true;
-    panic_if(pageNum == 0, "KHEAP_INIT with zero pages", PANIC_HEAP, 0);
+    if (heap.initialized) return TRUE;
+    if (pageNum == 0) pageNum = DEFAULT_HEAP_PAGES;
 
     U32 heap_phys_base = pf_alloc_pages(pageNum);
     panic_if(heap_phys_base == 0, "heap_init failed to allocate contiguous pages", PANIC_HEAP, pageNum);
 
-    heap.baseAddress = heap_phys_base;
-    heap.totalSize = pageNum*PAGE_SIZE;
-    heap.usedSize=0;
-    heap.freeSize = heap.totalSize-sizeof(heap_block);
-    heap.currentPtr = heap.baseAddress;
+    heap.baseAddress = (VOIDPTR)heap_phys_base;
+    heap.totalSize = pageNum * PAGE_SIZE;
+    heap.usedSize = 0;
+    heap.freeSize = heap.totalSize - sizeof(heap_block);
     heap.heap_init_pages = pageNum;
 
-    // initial free heap block
-    heap_block *first_block = heap.baseAddress;
+    // Initial free block
+    heap_block *first_block = (heap_block*)heap.baseAddress;
     first_block->magic0 = KHEAP_BLOCK_MAGIC0;
     first_block->magic1 = KHEAP_BLOCK_MAGIC1;
     first_block->magic2 = KHEAP_BLOCK_MAGIC2;
     first_block->size = heap.freeSize;
     first_block->real_size = heap.freeSize;
-    first_block->free = true;
+    first_block->free = TRUE;
+    first_block->prev = NULL;
+    first_block->next = NULL;
 
+    heap.firstBlock = first_block;
     heap.initialized = TRUE;
-    return true;
+
+    dcomprintf("[HEAP] Kernel heap initialized: %d KB at 0x%08X",
+               heap.totalSize / 1024, (U32)heap.baseAddress);
+    return TRUE;
 }
+
+BOOLEAN heap_expand(U32 min_payload_size) {
+    U32 req_bytes = min_payload_size + sizeof(heap_block);
+    U32 req_pages = pages_from_bytes(req_bytes);
+    if (req_pages < 16) {
+        req_pages = 16; // Expand by at least 64 KB
+    }
+
+    U32 new_mem = pf_alloc_pages(req_pages);
+    if (new_mem == 0) return FALSE;
+
+    heap_block *new_block = (heap_block*)new_mem;
+    new_block->magic0 = KHEAP_BLOCK_MAGIC0;
+    new_block->magic1 = KHEAP_BLOCK_MAGIC1;
+    new_block->magic2 = KHEAP_BLOCK_MAGIC2;
+    new_block->real_size = (req_pages * PAGE_SIZE) - sizeof(heap_block);
+    new_block->size = new_block->real_size;
+    new_block->free = TRUE;
+    new_block->next = NULL;
+
+    // Find the tail block
+    heap_block *curr = heap.firstBlock;
+    while (curr->next != NULL) {
+        curr = curr->next;
+    }
+    curr->next = new_block;
+    new_block->prev = curr;
+
+    heap.totalSize += (req_pages * PAGE_SIZE);
+    heap.freeSize += new_block->real_size;
+
+    dcomprintf("[HEAP] Expanded heap by %d KB (New Total: %d KB)",
+               (req_pages * PAGE_SIZE) / 1024, heap.totalSize / 1024);
+    return TRUE;
+}
+
+VOIDPTR kmalloc(U32 size) {
+    if (!heap.initialized || size == 0) return NULL;
+
+    // 8-byte alignment
+    U32 aligned_size = (size + 7) & ~7;
+
+    heap_block *curr = heap.firstBlock;
+    while (curr != NULL) {
+        validate_block(curr);
+
+        if (curr->free && curr->real_size >= aligned_size) {
+            // Check if block can be split
+            if (curr->real_size >= aligned_size + sizeof(heap_block) + 16) {
+                heap_block *new_block = (heap_block*)((PU8)curr + sizeof(heap_block) + aligned_size);
+                new_block->magic0 = KHEAP_BLOCK_MAGIC0;
+                new_block->magic1 = KHEAP_BLOCK_MAGIC1;
+                new_block->magic2 = KHEAP_BLOCK_MAGIC2;
+                new_block->real_size = curr->real_size - aligned_size - sizeof(heap_block);
+                new_block->size = new_block->real_size;
+                new_block->free = TRUE;
+                new_block->prev = curr;
+                new_block->next = curr->next;
+
+                if (curr->next != NULL) {
+                    curr->next->prev = new_block;
+                }
+                curr->next = new_block;
+                curr->real_size = aligned_size;
+            }
+
+            curr->free = FALSE;
+            curr->size = size;
+            heap.usedSize += curr->real_size;
+            if (heap.freeSize >= curr->real_size) {
+                heap.freeSize -= curr->real_size;
+            } else {
+                heap.freeSize = 0;
+            }
+
+            return (VOIDPTR)((PU8)curr + sizeof(heap_block));
+        }
+
+        curr = curr->next;
+    }
+
+    // No block was large enough; expand heap and retry
+    if (heap_expand(aligned_size)) {
+        return kmalloc(size);
+    }
+
+    return NULL; // Out of memory
+}
+
+VOIDPTR kzalloc(U32 size) {
+    VOIDPTR ptr = kmalloc(size);
+    if (ptr != NULL) {
+        memzero((PU8)ptr, size);
+    }
+    return ptr;
+}
+
+VOID kfree(VOIDPTR ptr) {
+    if (!heap.initialized || ptr == NULL) return;
+
+    heap_block *block = (heap_block*)((PU8)ptr - sizeof(heap_block));
+    validate_block(block);
+
+    panic_if(block->free == TRUE, "kfree: double free detected", PANIC_HEAP, (U32)ptr);
+
+    block->free = TRUE;
+    if (heap.usedSize >= block->real_size) {
+        heap.usedSize -= block->real_size;
+    } else {
+        heap.usedSize = 0;
+    }
+    heap.freeSize += block->real_size;
+
+    // Coalesce with next block if free and contiguous in memory
+    if (block->next != NULL && block->next->free) {
+        heap_block *nxt = block->next;
+        validate_block(nxt);
+        if ((PU8)block + sizeof(heap_block) + block->real_size == (PU8)nxt) {
+            block->real_size += sizeof(heap_block) + nxt->real_size;
+            block->next = nxt->next;
+            if (nxt->next != NULL) {
+                nxt->next->prev = block;
+            }
+            nxt->magic0 = 0;
+            nxt->magic1 = 0;
+            nxt->magic2 = 0;
+        }
+    }
+
+    // Coalesce with prev block if free and contiguous in memory
+    if (block->prev != NULL && block->prev->free) {
+        heap_block *prv = block->prev;
+        validate_block(prv);
+        if ((PU8)prv + sizeof(heap_block) + prv->real_size == (PU8)block) {
+            prv->real_size += sizeof(heap_block) + block->real_size;
+            prv->next = block->next;
+            if (block->next != NULL) {
+                block->next->prev = prv;
+            }
+            block->magic0 = 0;
+            block->magic1 = 0;
+            block->magic2 = 0;
+        }
+    }
+}
+
+VOIDPTR krealloc(VOIDPTR ptr, U32 new_size) {
+    if (ptr == NULL) return kmalloc(new_size);
+    if (new_size == 0) {
+        kfree(ptr);
+        return NULL;
+    }
+
+    heap_block *block = (heap_block*)((PU8)ptr - sizeof(heap_block));
+    validate_block(block);
+
+    if (block->real_size >= new_size) {
+        block->size = new_size;
+        return ptr;
+    }
+
+    VOIDPTR new_ptr = kmalloc(new_size);
+    if (new_ptr == NULL) return NULL;
+
+    U32 copy_len = block->size;
+    if (new_size < copy_len) {
+        copy_len = new_size;
+    }
+    memcpy((PU8)new_ptr, (PU8)ptr, copy_len);
+    kfree(ptr);
+
+    return new_ptr;
+}
+
+VOID heap_dump() {
+    dcomprintf("[HEAP] Status: %d/%d KB Used, %d KB Free",
+               heap.usedSize / 1024, heap.totalSize / 1024, heap.freeSize / 1024);
+}
+
+#endif // HEAP_AC

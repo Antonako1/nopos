@@ -1,0 +1,94 @@
+#ifndef PAGING_AC
+#define PAGING_AC
+
+/*
+ * kernel/mm/paging/paging.ac — 1:1 Identity Paging (vaddr == paddr)
+ */
+
+#define PAGE_DIR_PHYS_ADDR   0x00100000 // 1 MB boundary
+#define PAGE_TAB0_PHYS_ADDR  0x00101000 // 1 MB + 4 KB
+
+#define PAGE_PRESENT         0x01
+#define PAGE_WRITE           0x02
+#define PAGE_USER            0x04
+#define PAGE_WRITE_THROUGH   0x08
+#define PAGE_CACHE_DISABLE   0x10
+#define PAGE_ACCESSED        0x20
+#define PAGE_DIRTY           0x40
+#define PAGE_4MB_SIZE        0x80
+
+BOOLEAN g_paging_enabled = FALSE;
+
+U0 paging_invalidate(U32 vaddr) {
+    asm {
+        MOV EAX, vaddr
+        DB 0x0F, 0x01, 0x38
+    }
+}
+
+BOOLEAN paging_is_enabled() {
+    return (read_cr0() & 0x80000000) != 0;
+}
+
+BOOLEAN paging_init() {
+    if (g_paging_enabled) return TRUE;
+
+    PU32 page_dir = (PU32)PAGE_DIR_PHYS_ADDR;
+    PU32 page_tab0 = (PU32)PAGE_TAB0_PHYS_ADDR;
+
+    // 1. Clear Page Directory and Page Table 0
+    memzero((PU8)page_dir, PAGE_SIZE);
+    memzero((PU8)page_tab0, PAGE_SIZE);
+
+    // 2. Setup Page Table 0: 4KB Identity map for first 4MB (0x00000000 - 0x003FFFFF)
+    for (U32 i = 0; i < 1024; i++) {
+        U32 phys_addr = i * 0x1000;
+        // Default attributes: Present, Read/Write, Supervisor
+        U32 flags = PAGE_PRESENT | PAGE_WRITE;
+        page_tab0[i] = phys_addr | flags;
+    }
+
+    // 3. Entry 0 of Page Directory points to Page Table 0
+    page_dir[0] = PAGE_TAB0_PHYS_ADDR | PAGE_PRESENT | PAGE_WRITE;
+
+    // 4. Identity map the rest of 4GB (0x00400000 - 0xFFFFFFFF) using 4MB PSE Pages
+    U32 vbe_lfb_pde = 0;
+    if (gkt && gkt->vbe_mode_info.PhysBasePtr != 0) {
+        vbe_lfb_pde = gkt->vbe_mode_info.PhysBasePtr / 0x00400000;
+    }
+
+    for (U32 i = 1; i < 1024; i++) {
+        U32 phys_addr = i * 0x00400000;
+        U32 flags = PAGE_PRESENT | PAGE_WRITE | PAGE_4MB_SIZE;
+
+        // If this 4MB chunk contains the SVGA Linear Framebuffer, enable Write-Through / caching optimization
+        if (vbe_lfb_pde != 0 && (i == vbe_lfb_pde || i == vbe_lfb_pde + 1)) {
+            flags |= PAGE_WRITE_THROUGH;
+        }
+
+        // High APIC / IOAPIC MMIO region (0xFEC00000 & 0xFEE00000 live at PDE 1019 = 0xFEC00000)
+        if (i >= 1019) {
+            flags |= (PAGE_CACHE_DISABLE | PAGE_WRITE_THROUGH);
+        }
+
+        page_dir[i] = phys_addr | flags;
+    }
+
+    // 5. Load Page Directory Base Register (CR3)
+    write_cr3(PAGE_DIR_PHYS_ADDR);
+
+    // 6. Enable Page Size Extensions (PSE) in CR4 (Bit 4 = 0x10)
+    U32 cr4_val = read_cr4();
+    write_cr4(cr4_val | 0x00000010);
+
+    // 7. Enable Paging (Bit 31 = 0x80000000) and Write Protection (Bit 16 = 0x00010000) in CR0
+    U32 cr0_val = read_cr0();
+    write_cr0(cr0_val | 0x80010000);
+
+    g_paging_enabled = TRUE;
+    dcomprintf("[PAGING] 1:1 Identity Paging initialized and enabled (CR3=0x%08X, CR0=0x%08X)",
+               read_cr3(), read_cr0());
+    return TRUE;
+}
+
+#endif // PAGING_AC
