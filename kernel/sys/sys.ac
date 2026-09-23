@@ -4,7 +4,7 @@ Function table:
     U0 panic(PU8 msg, U32 errnum, U32 info)
     U0 panic_if(BOOLEAN stmt, PU8 msg, U32 errnum, U32 info)
 */
-U0 sys_reboot(void) {
+U0 sys_reboot() {
     asm { CLI } // Disable interrupts to prevent ISR execution during reset
 
     // 1. PS/2 Keyboard Controller Pulse Reset (Standard x86 Hardware)
@@ -22,7 +22,10 @@ U0 sys_reboot(void) {
 
     // 3. Fallback: Force CPU Triple Fault
     // Load a NULL IDT (length 0) and trigger an interrupt
-    U16 null_idt[3] = { 0, 0, 0 };
+    U16 null_idt[3];
+    null_idt[0] = 0; // Limit
+    null_idt[1] = 0; // Base Low
+    null_idt[2] = 0; // Base High
     asm {
         lea eax, null_idt; 
         LIDT [eax]
@@ -41,6 +44,7 @@ U0 sys_reboot(void) {
 
 #define PANIC_HEAP      0x0
 #define PANIC_KERNEL    0x1
+#define PANIC_PROGRAM   0x2
 
 U0 panic(PU8 msg, U32 errnum, U32 info) {
     ASM { CLI }
