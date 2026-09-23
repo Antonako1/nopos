@@ -1,5 +1,4 @@
 #include "kernel.ah"
-KERNEL_TABLE *gkt;
 
 U0 _start(KERNEL_TABLE *kt) {
     asm { CLI }
@@ -17,27 +16,34 @@ U0 _start(KERNEL_TABLE *kt) {
     gkt = kt;
     dcominit();
     SVGA_CLEAR_SCREEN(BLACK);
-    SVGA_DRAW_TEST();
-    
+
     dcom_yl_on();
     dcom_rl_on();
     dcom_gl_on();
-    dcom_rl_off();
-    dcom_yl_off();
-    dcom_gl_off();
-    dcomputs("nopos dcomputs() test");
+    dcomprintf("nopos starting %d, %x, %d", 10, 0xFF, -11);
 
+    // Memory Management Initialization
+    e820_dump(gkt->e820entries, gkt->e820cnt);
+    panic_if(pg_init() == FALSE, "Failed to initialize pageframe", PANIC_KERNEL, 0);
+    pf_dump();
+    dcomprintf("[MM] Pageframe initialized successfully.");
+    panic_if(paging_init() == FALSE, "Failed to initialize paging", PANIC_KERNEL, 0);
+    dcomprintf("[MM] Paging initialized successfully.");
+    panic_if(heap_init(0) == FALSE, "Failed to initialize heap", PANIC_KERNEL, 0);
+    dcomprintf("[MM] Heap initialized successfully.");
 
-    // panic_if(pg_init() == FALSE, "Failed to initialized pageframe", PANIC_KERNEL, 0);
-    // panic_if(heap_init(1) == FALSE, "Failed to initialized heap", PANIC_KERNEL, 0);
-
+    // ATA & FAT12 Storage Initialization
+    ata_init();
+    FAT12_INIT(&g_fat12_volume);
+    dcomprintf("[FS] FAT12 Storage initialized successfully.");
 
     asm { STI }
 
     dcom_rl_off();
     dcom_yl_off();
     dcom_gl_on();
-    
+
+    dcomprintf("[SHELL] Starting shell...");
     SHELL_RUN();
 
     asm { 
