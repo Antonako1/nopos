@@ -36,10 +36,10 @@ U8 io_fg = WHITE;
 U8 io_bg = BLACK;
 PU8 video_memory = 0xB8000;
 
-void putc(U8 c) {
+U0 putc(U8 c) {
     if (c == '\n') {
         io_col = 0;
-        io_row++;
+        io_row = io_row + 1;
         return;
     }
 
@@ -49,10 +49,10 @@ void putc(U8 c) {
     video_memory[pos]     = c;
     video_memory[pos + 1] = attr;
     
-    io_col++;
+    io_col = io_col + 1;
     if (io_col >= COLS) {
         io_col = 0;
-        io_row++;
+        io_row = io_row + 1;
     }
     
     if (io_row >= ROWS) {
@@ -60,16 +60,16 @@ void putc(U8 c) {
     }
 }
 
-void puts(PU8 s) {
+U0 puts(PU8 s) {
     while(*s != 0) {
         putc(*s);
-        s++;
+        s = s + 1;
     }
 }
 
-void cls() {
+U0 cls() {
     U8 attr = (io_bg << 4) | io_fg;
-    for(U32 i = 0; i < ROWS * COLS * 2; i += 2) {
+    for(U32 i = 0; i < ROWS * COLS * 2; i = i + 2) {
         video_memory[i]     = ' ';
         video_memory[i + 1] = attr;
     }
@@ -77,7 +77,7 @@ void cls() {
     io_col = 0;
 }
 
-void set_fg(U8 c)   { io_fg = c; }
-void set_bg(U8 c)   { io_bg = c; }
-void set_col(U32 c) { io_col = c; }
-void set_row(U32 r) { io_row = r; }
+U0 set_fg(U8 c)   { io_fg = c; }
+U0 set_bg(U8 c)   { io_bg = c; }
+U0 set_col(U32 c) { io_col = c; }
+U0 set_row(U32 r) { io_row = r; }
