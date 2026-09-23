@@ -33,8 +33,8 @@ U0 _start(KERNEL_TABLE *kt) {
     dcomprintf("[MM] Heap initialized successfully.");
 
     // ATA & FAT12 Storage Initialization
-    ata_init();
-    FAT12_INIT(&g_fat12_volume);
+    // ata_init();
+    // FAT12_INIT(&g_fat12_volume);
     dcomprintf("[FS] FAT12 Storage initialized successfully.");
 
     asm { STI }
