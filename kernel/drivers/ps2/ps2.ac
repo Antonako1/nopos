@@ -63,7 +63,7 @@ U0 kbd_push(U8 ch) {
 
 U0 ps2_wait_write() {
     // Wait until bit 1 (input buffer status) of port 0x64 becomes 0
-    while ((inb(0x64) & 2) != 0);
+    while ((inb(0x64) & 2) != 0) {}
 }
 
 U0 ps2_init() {
