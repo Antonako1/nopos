@@ -79,7 +79,7 @@ typedef struct _VBE_MODE_INFO {
 #include "./colours.ac"
 #include "./font.ac"
 
-void SVGA_DRAW_FRAMEBUFFER(U32 pos, U8 colour) {
+U0 SVGA_DRAW_FRAMEBUFFER(U32 pos, U8 colour) {
   U32 stride = gkt->vbe_mode_info.BytesPerScanLine;
   U32 size = stride * gkt->vbe_mode_info.YResolution;
 
@@ -90,7 +90,7 @@ void SVGA_DRAW_FRAMEBUFFER(U32 pos, U8 colour) {
   framebuffer[pos] = colour;
 }
 
-void SVGA_DRAW_PIXEL(I32 x, I32 y, U8 colour) {
+U0 SVGA_DRAW_PIXEL(I32 x, I32 y, U8 colour) {
   if(x < 0 || y < 0) return;
   if((U32)x >= gkt->vbe_mode_info.XResolution ||
    (U32)y >= gkt->vbe_mode_info.YResolution) return;
@@ -101,7 +101,7 @@ void SVGA_DRAW_PIXEL(I32 x, I32 y, U8 colour) {
   SVGA_DRAW_FRAMEBUFFER(pos, colour);
 }
 
-void SVGA_DRAW_CHARACTER(U32 x, U32 y, U8 c, U8 fg, U8 bg) {
+U0 SVGA_DRAW_CHARACTER(U32 x, U32 y, U8 c, U8 fg, U8 bg) {
   for(U32 i = 0; i < FNT_CH_HEIGHT; i++) {
     U8 row = g_fnt8x16[c * FNT_CH_HEIGHT + i];
     for(U32 j = 0; j < FNT_CH_WIDTH; j++) {
@@ -111,20 +111,20 @@ void SVGA_DRAW_CHARACTER(U32 x, U32 y, U8 c, U8 fg, U8 bg) {
   }
 }
 
-void SVGA_DRAW_STRING(U32 x, U32 y, PU8 str, U8 fg, U8 bg) {
+U0 SVGA_DRAW_STRING(U32 x, U32 y, PU8 str, U8 fg, U8 bg) {
   U32 ln = strlen(str);
   for (U32 i = 0; i < ln; i++) {
     SVGA_DRAW_CHARACTER(x + i * FNT_CH_WIDTH, y, str[i], fg, bg);
   }
 }
 
-void SVGA_DRAW_NSTRING(U32 x, U32 y, PU8 str, U32 mlen, U8 fg, U8 bg) {
+U0 SVGA_DRAW_NSTRING(U32 x, U32 y, PU8 str, U32 mlen, U8 fg, U8 bg) {
   for (U32 i = 0; i < mlen; i++) {
     SVGA_DRAW_CHARACTER(x + i * FNT_CH_WIDTH, y, str[i], fg, bg);
   }
 }
 
-void SVGA_DRAW_LINE(I32 x0, I32 y0, I32 x1, I32 y1, U8 colour) {
+U0 SVGA_DRAW_LINE(I32 x0, I32 y0, I32 x1, I32 y1, U8 colour) {
   I32 d_x = x1 - x0;
   I32 d_y = y1 - y0;
   I32 s_x = 1;
@@ -146,7 +146,7 @@ void SVGA_DRAW_LINE(I32 x0, I32 y0, I32 x1, I32 y1, U8 colour) {
   }
 }
 
-void SVGA_DRAW_RECTANGLE(U32 x, U32 y, U32 w, U32 h, U8 colour) {
+U0 SVGA_DRAW_RECTANGLE(U32 x, U32 y, U32 w, U32 h, U8 colour) {
   if (w == 0 || h == 0) return;
   U32 x1 = x + w - 1;
   U32 y1 = y + h - 1;
@@ -156,7 +156,7 @@ void SVGA_DRAW_RECTANGLE(U32 x, U32 y, U32 w, U32 h, U8 colour) {
   SVGA_DRAW_LINE(x, y1, x, y, colour);
 }
 
-void SVGA_DRAW_RECTANGLE_FILLED(U32 x, U32 y, U32 w, U32 h, U8 colour) {
+U0 SVGA_DRAW_RECTANGLE_FILLED(U32 x, U32 y, U32 w, U32 h, U8 colour) {
   if (w == 0 || h == 0) return;
 
   for (U32 yy = 0; yy < h; yy++) {
@@ -166,20 +166,20 @@ void SVGA_DRAW_RECTANGLE_FILLED(U32 x, U32 y, U32 w, U32 h, U8 colour) {
   }
 }
 
-void SVGA_CLEAR_SCREEN(U8 colour) {
+U0 SVGA_CLEAR_SCREEN(U8 colour) {
   U32 stride = gkt->vbe_mode_info.BytesPerScanLine;
   U32 size = stride * gkt->vbe_mode_info.YResolution;
   PU8 fb = (PU8)gkt->vbe_mode_info.PhysBasePtr;
   memset(fb, colour, size);
 }
 
-void SVGA_DRAW_TRIANGLE(U32 x1, U32 y1, U32 x2, U32 y2, U32 x3, U32 y3, U8 colour) {
+U0 SVGA_DRAW_TRIANGLE(U32 x1, U32 y1, U32 x2, U32 y2, U32 x3, U32 y3, U8 colour) {
   SVGA_DRAW_LINE(x1, y1, x2, y2, colour);
   SVGA_DRAW_LINE(x2, y2, x3, y3, colour);
   SVGA_DRAW_LINE(x3, y3, x1, y1, colour);
 }
 
-void SVGA_DRAW_FILLED_TRIANGLE(I32 x1, I32 y1, I32 x2, I32 y2, I32 x3, I32 y3, U8 colour, I32 screen_w, I32 screen_h) {
+U0 SVGA_DRAW_FILLED_TRIANGLE(I32 x1, I32 y1, I32 x2, I32 y2, I32 x3, I32 y3, U8 colour, I32 screen_w, I32 screen_h) {
     I32 minx = x1; I32 maxx = x1;
     I32 miny = y1; I32 maxy = y1;
 
@@ -210,7 +210,7 @@ void SVGA_DRAW_FILLED_TRIANGLE(I32 x1, I32 y1, I32 x2, I32 y2, I32 x3, I32 y3, U
     }
 }
 
-void SVGA_DRAW_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
+U0 SVGA_DRAW_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
   if (a == 0 || b == 0) return;
   
   I32 ia = (I32)a;
@@ -253,7 +253,7 @@ void SVGA_DRAW_ELLIPSE(U32 x0, U32 y0, U32 a, U32 b, U8 colour) {
   }
 }
 
-void SVGA_DRAW_FILLED_ELLIPSE(I32 x0, I32 y0, I32 a, I32 b, U8 colour) {
+U0 SVGA_DRAW_FILLED_ELLIPSE(I32 x0, I32 y0, I32 a, I32 b, U8 colour) {
     if (a <= 0 || b <= 0) return;
 
     I32 x = 0;
@@ -265,7 +265,7 @@ void SVGA_DRAW_FILLED_ELLIPSE(I32 x0, I32 y0, I32 a, I32 b, U8 colour) {
     I32 t = -a2 * y;
     I32 dxt = 2 * b2 * x;
     I32 dyt = -2 * a2 * y;
-    I32 d, i;
+    I32 d; I32 i;
 
     // Draw horizontal spans to fill the ellipse symmetrically
     while (y >= 0 && x <= a) {
@@ -288,7 +288,7 @@ void SVGA_DRAW_FILLED_ELLIPSE(I32 x0, I32 y0, I32 a, I32 b, U8 colour) {
     }
 }
 
-void SVGA_DRAW_TEST(void) {
+U0 SVGA_DRAW_TEST() {
     SVGA_CLEAR_SCREEN(BLACK);
 
     SVGA_DRAW_STRING(20, 20, (PU8)"256 Colors:", WHITE, BLACK);
