@@ -45,12 +45,15 @@ KERNEL_WIN="$(wslpath -w "$KERNEL_DIR/kernel.ac")"
 
 echo "==> [1/4] Assemble bootloader"
 "$ASTRAC" asm "$BOOTLOADER_WIN" bits 16 org 7C00 arch i286 warn 2
+echo "Build flag: $?"
 
 echo "==> [2/4] Assemble second stage"
 "$ASTRAC" asm "$SECOND_STAGE_WIN" bits 16 org 7E00 warn 2
+echo "Build flag: $?"
 
 echo "==> [3/4] Compile kernel"
 "$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug #verbose
+echo "Build flag: $?"
 
 echo "==> [4/4] Create FAT12 floppy image"
 
