@@ -1,11 +1,11 @@
 /*
 Function table:
-  void FAT12_INIT(FAT12_VOL *vol);
+  void FAT12_INIT(FAT12_VOL *vol, PU8 ram_base);
   U16  FAT12_GET_FAT_ENTRY(FAT12_VOL *vol, U16 cluster);
   void FAT12_READ_CLUSTER(FAT12_VOL *vol, U16 cluster, PU8 buffer);
   U8   FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry);
   void FAT12_READ_FILE(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry, PU8 buffer);
-  void FAT12_TEST(void);
+  PU8  FAT12_GET_FILE_PTR(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry);
 */
 
 #define FAT12_EOF           0x0FF8
@@ -31,22 +31,22 @@ typedef struct _FAT12_BPB {
   U32 TotalSectors32;
   U8  DriveNumber;
   U8  Reserved;
-  U8  BootSignature;     // Usually 0x29
+  U8  BootSignature;
   U32 VolumeID;
   U8  VolumeLabel[11];
-  U8  FileSystemType[8]; // "FAT12   "
+  U8  FileSystemType[8];
 } FAT12_BPB;
 
 // 32-Byte FAT Directory Entry
 typedef struct _FAT12_DIR_ENTRY {
-  U8  Name[11];          // 8-char name, 3-char extension, space padded
+  U8  Name[11];
   U8  Attributes;
   U8  Reserved;
   U8  CreationTimeTenths;
   U16 CreationTime;
   U16 CreationDate;
   U16 LastAccessDate;
-  U16 FirstClusterHigh;  // Always 0 in FAT12
+  U16 FirstClusterHigh;
   U16 LastWriteTime;
   U16 LastWriteDate;
   U16 FirstClusterLow;
@@ -55,88 +55,88 @@ typedef struct _FAT12_DIR_ENTRY {
 
 // Context state for the mounted volume
 typedef struct _FAT12_VOL {
+  PU8       ram_base; // Physical RAM base pointer of the iPXE FAT12 memory image
   FAT12_BPB bpb;
-  U32 fat_lba;
-  U32 root_dir_lba;
-  U32 data_lba;
-  U32 root_dir_sectors;
-  U32 bytes_per_cluster;
+  U32       fat_lba;
+  U32       root_dir_lba;
+  U32       data_lba;
+  U32       root_dir_sectors;
+  U32       bytes_per_cluster;
   
   // Entire FAT is typically 9 sectors (512*9=4608 bytes) for floppy disks. 
-  // We keep it in memory for fast cluster lookups.
-  U8  fat_buffer[4608]; 
+  U8        fat_buffer[4608]; 
 } FAT12_VOL;
-
 
 FAT12_VOL g_fat12_volume;
 
-// ── External Disk Interface (You must implement this in your ATA/Floppy driver) ──
-// void DISK_READ_SECTORS(U32 lba, U32 count, PU8 buffer);
+void FAT12_INIT(FAT12_VOL *vol, PU8 ram_base) {
+  vol->ram_base = ram_base;
+  if (!ram_base) {
+    return;
+  }
 
-void FAT12_INIT(FAT12_VOL *vol) {
-  // Read boot sector (LBA 0) to get the BPB
-  DISK_READ_SECTORS(0, 1, (PU8)&vol->bpb);
+  // Parse BPB directly from RAM image Sector 0
+  memcpy((PU8)&vol->bpb, ram_base, sizeof(FAT12_BPB));
 
   // Calculate sector boundaries based on BPB parameters
   vol->fat_lba = vol->bpb.ReservedSectors;
-  
   vol->root_dir_sectors = (vol->bpb.RootDirEntries * 32 + vol->bpb.BytesPerSector - 1) / vol->bpb.BytesPerSector;
-  
   vol->root_dir_lba = vol->fat_lba + (vol->bpb.NumberOfFATs * vol->bpb.SectorsPerFAT);
-  
   vol->data_lba = vol->root_dir_lba + vol->root_dir_sectors;
-  
   vol->bytes_per_cluster = vol->bpb.BytesPerSector * vol->bpb.SectorsPerCluster;
 
-  // Cache the File Allocation Table in memory
-  DISK_READ_SECTORS(vol->fat_lba, vol->bpb.SectorsPerFAT, vol->fat_buffer);
+  // Cache File Allocation Table directly from RAM
+  U32 fat_offset = vol->fat_lba * vol->bpb.BytesPerSector;
+  memcpy(vol->fat_buffer, ram_base + fat_offset, vol->bpb.SectorsPerFAT * vol->bpb.BytesPerSector);
+
+  dcomprintf("[FAT12] In-Memory Volume Initialized: Base=0x%08X, RootLBA=%d, DataLBA=%d\n",
+             ram_base, vol->root_dir_lba, vol->data_lba);
 }
 
 // Unpack a 12-bit entry from the File Allocation Table
 U16 FAT12_GET_FAT_ENTRY(FAT12_VOL *vol, U16 cluster) {
-  // FAT12 uses 1.5 bytes per cluster
   U32 offset = cluster + (cluster / 2);
-  
-  // Read 16 bits safely without triggering unaligned access faults
   U16 val = vol->fat_buffer[offset] | ((U16)vol->fat_buffer[offset + 1] << 8);
 
   if (cluster & 1) {
-    // Odd cluster: Use the high 12 bits
     return val >> 4;
   } else {
-    // Even cluster: Use the low 12 bits
     return val & 0x0FFF;
   }
 }
 
 void FAT12_READ_CLUSTER(FAT12_VOL *vol, U16 cluster, PU8 buffer) {
-  // Data clusters start at cluster number 2
+  if (!vol->ram_base || !buffer) return;
   U32 lba = vol->data_lba + ((cluster - 2) * vol->bpb.SectorsPerCluster);
-  DISK_READ_SECTORS(lba, vol->bpb.SectorsPerCluster, buffer);
+  PU8 src = vol->ram_base + (lba * vol->bpb.BytesPerSector);
+  memcpy(buffer, src, vol->bytes_per_cluster);
 }
 
-// Searches the Root Directory for a file. 
-// Note: filename must be exactly 11 characters, upper case, space-padded. 
-// Example: "KERNEL  BIN"
+PU8 FAT12_GET_FILE_PTR(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry) {
+  if (!vol->ram_base || !entry) return NULLPTR;
+  U16 cluster = entry->FirstClusterLow;
+  if (cluster < 2) return NULLPTR;
+  U32 lba = vol->data_lba + ((cluster - 2) * vol->bpb.SectorsPerCluster);
+  return vol->ram_base + (lba * vol->bpb.BytesPerSector);
+}
+
 U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
-  U8 buffer[512]; 
+  if (!vol->ram_base) return 0;
   
-  for (U32 i = 0; i < vol->root_dir_sectors; i++) {
-    DISK_READ_SECTORS(vol->root_dir_lba + i, 1, buffer);
-    FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buffer;
+  for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
+    PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
+    FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
     
-    // 16 directory entries per 512-byte sector
-    for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j++) {
+    for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
       if (entry[j].Name[0] == DIR_ENTRY_END) {
-        return 0; // End of directory, file not found
+        return 0;
       }
       if (entry[j].Name[0] == DIR_ENTRY_FREE) {
-        continue; // Deleted file, skip
+        continue;
       }
       
-      // Compare the 11 character 8.3 FAT filename
       U8 match = 1;
-      for (U32 k = 0; k < 11; k++) {
+      for (U32 k = 0; k < 11; k = k + 1) {
         if (entry[j].Name[k] != filename[k]) {
           match = 0;
           break;
@@ -145,25 +145,20 @@ U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
       
       if (match) {
         *out_entry = entry[j];
-        return 1; // File found
+        return 1;
       }
     }
   }
-  return 0; // Not found
+  return 0;
 }
 
-// Loads the entire file into the target buffer by following the FAT cluster chain
 void FAT12_READ_FILE(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry, PU8 buffer) {
   U16 cluster = entry->FirstClusterLow;
   U32 offset = 0;
   
-  // Keep reading until we hit the End of File marker (usually 0xFF8-0xFFF)
   while (cluster >= 0x002 && cluster < FAT12_EOF) {
     FAT12_READ_CLUSTER(vol, cluster, buffer + offset);
     offset += vol->bytes_per_cluster;
-    
-    // Look up the next cluster in the chain
     cluster = FAT12_GET_FAT_ENTRY(vol, cluster);
   }
 }
-

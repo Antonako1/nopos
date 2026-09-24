@@ -1,0 +1,45 @@
+/*
+Function table:
+  U0  ramdisk_init(PU8 base_addr, U32 size_bytes);
+  U32 ramdisk_read_sectors(U32 lba, U32 count, PU8 buffer);
+  U32 ramdisk_write_sectors(U32 lba, U32 count, PU8 buffer);
+  U32 ramdisk_get_sector_count();
+*/
+
+local PU8  g_ramdisk_base = NULLPTR;
+local U32  g_ramdisk_size = 0;
+local U32  g_ramdisk_sectors = 0;
+
+U0 ramdisk_init(PU8 base_addr, U32 size_bytes) {
+    g_ramdisk_base = base_addr;
+    g_ramdisk_size = size_bytes;
+    g_ramdisk_sectors = size_bytes / 512;
+}
+
+U32 ramdisk_read_sectors(U32 lba, U32 count, PU8 buffer) {
+    if (!g_ramdisk_base || !buffer) {
+        return 0;
+    }
+    if (lba + count > g_ramdisk_sectors) {
+        return 0;
+    }
+    PU8 src = g_ramdisk_base + (lba * 512);
+    memcpy(buffer, src, count * 512);
+    return count;
+}
+
+U32 ramdisk_write_sectors(U32 lba, U32 count, PU8 buffer) {
+    if (!g_ramdisk_base || !buffer) {
+        return 0;
+    }
+    if (lba + count > g_ramdisk_sectors) {
+        return 0;
+    }
+    PU8 dst = g_ramdisk_base + (lba * 512);
+    memcpy(dst, buffer, count * 512);
+    return count;
+}
+
+U32 ramdisk_get_sector_count() {
+    return g_ramdisk_sectors;
+}
