@@ -39,6 +39,7 @@ U0 sh_scroll() {
 // ---------------------------------------------------------------------------
 // Low-level Character Output
 U0 shell_putc(U8 c) {
+    serial_wb(SERIAL_PORT2, c);
     U32 x_res = gkt->vbe_mode_info.XResolution;
     U32 y_res = gkt->vbe_mode_info.YResolution;
 
@@ -54,7 +55,7 @@ U0 shell_putc(U8 c) {
         g_sh_cx = 0;
         return;
     }
-    if (c == '\b') {
+    if (c == 0x08) {
         if (g_sh_cx >= 8) {
             g_sh_cx = g_sh_cx - 8;
             SVGA_DRAW_CHARACTER(g_sh_cx, g_sh_cy, ' ', g_sh_fg_color, g_sh_bg_color);
@@ -111,116 +112,178 @@ U0 shell_hist_add(PU8 line) {
 }
 
 // ---------------------------------------------------------------------------
-// Command Implementations
-U0 shell_cmd_help() {
-    g_sh_fg_color = LIGHT_CYAN;
-    shell_puts((PU8)"NopOS System Shell - Available Commands:\n");
-    g_sh_fg_color = WHITE;
-    shell_puts((PU8)"  help        - Show this help manual\n");
-    shell_puts((PU8)"  dir / ls    - List files on root directory\n");
-    shell_puts((PU8)"  type / cat  - Display contents of a file (e.g. type README.TXT)\n");
-    shell_puts((PU8)"  echo        - Print text to screen\n");
-    shell_puts((PU8)"  dcomputs    - Send string to COM2 serial debug port\n");
-    shell_puts((PU8)"  clear / cls - Clear screen\n");
-    shell_puts((PU8)"  mem / pmm   - Display RAM and heap statistics\n");
-    shell_puts((PU8)"  vesa / info - Display VESA graphics mode details\n");
-    shell_puts((PU8)"  history     - Display command history\n");
-    shell_puts((PU8)"  reboot      - Reboot computer\n");
-    shell_puts((PU8)"  panic       - Trigger kernel panic test\n");
+// Path Resolution
+#define SHELL_PATH_DEPTH 16
+
+U0 shell_resolve_path(PU8 arg, PU8 out_path) {
+    if (arg == NULLPTR || strlen(arg) == 0) {
+        strcpy(out_path, g_sh_cwd);
+        return;
+    }
+
+    U8 drive[16];
+    drive[0] = 0;
+    PU8 rel = arg;
+
+    if ((arg[0] >= 'a' && arg[0] <= 'z') || (arg[0] >= 'A' && arg[0] <= 'Z')) {
+        if (arg[1] == ':') {
+            drive[0] = c_toupper(arg[0]);
+            drive[1] = ':';
+            drive[2] = '/';
+            drive[3] = 0;
+            rel = arg + 2;
+            if (*rel == '/' || *rel == '\\') {
+                rel = rel + 1;
+            }
+        }
+    }
+
+    if (drive[0] == 0) {
+        if (strncmp(arg, "ram0:", 5) == 0) {
+            strcpy(drive, "ram0:/");
+            rel = arg + 5;
+            if (*rel == '/' || *rel == '\\') rel = rel + 1;
+        } else if (strncmp(arg, "hd0p1:", 6) == 0) {
+            strcpy(drive, "hd0p1:/");
+            rel = arg + 6;
+            if (*rel == '/' || *rel == '\\') rel = rel + 1;
+        }
+    }
+
+    U8 full_path[128];
+    if (drive[0] != 0) {
+        strcpy(full_path, rel);
+    } else {
+        PU8 colon = strchr(g_sh_cwd, ':');
+        if (colon != NULLPTR) {
+            U32 dlen = (U32)(colon - g_sh_cwd + 1);
+            strncpy(drive, g_sh_cwd, dlen);
+            drive[dlen] = '/';
+            drive[dlen + 1] = 0;
+        } else {
+            strcpy(drive, "A:/");
+        }
+
+        if (arg[0] == '/' || arg[0] == '\\') {
+            strcpy(full_path, arg + 1);
+        } else {
+            PU8 cwd_rest = g_sh_cwd;
+            PU8 c_pos = strchr(g_sh_cwd, ':');
+            if (c_pos != NULLPTR) {
+                cwd_rest = c_pos + 1;
+                if (*cwd_rest == '/' || *cwd_rest == '\\') cwd_rest = cwd_rest + 1;
+            }
+            strcpy(full_path, cwd_rest);
+            U32 flen = strlen(full_path);
+            if (flen > 0 && full_path[flen - 1] != '/' && full_path[flen - 1] != '\\') {
+                strcat(full_path, "/");
+            }
+            strcat(full_path, arg);
+        }
+    }
+
+    for (U32 i = 0; full_path[i] != 0; i = i + 1) {
+        if (full_path[i] == '\\') {
+            full_path[i] = '/';
+        }
+    }
+
+    U8 components[SHELL_PATH_DEPTH][32];
+    U32 depth = 0;
+
+    PU8 p = full_path;
+    while (*p != 0) {
+        while (*p == '/') p = p + 1;
+        if (*p == 0) break;
+
+        PU8 slash = strchr(p, '/');
+        U8 comp[32];
+        if (slash != NULLPTR) {
+            U32 clen = (U32)(slash - p);
+            if (clen >= 32) clen = 31;
+            strncpy(comp, p, clen);
+            comp[clen] = 0;
+            p = slash + 1;
+        } else {
+            strncpy(comp, p, 31);
+            comp[31] = 0;
+            p = p + strlen(p);
+        }
+
+        if (strcmp(comp, ".") == 0 || strlen(comp) == 0) {
+            continue;
+        }
+        if (strcmp(comp, "..") == 0) {
+            if (depth > 0) {
+                depth = depth - 1;
+            }
+            continue;
+        }
+
+        if (depth < SHELL_PATH_DEPTH) {
+            strcpy((PU8)components[depth], comp);
+            depth = depth + 1;
+        }
+    }
+
+    strcpy(out_path, drive);
+    for (U32 i = 0; i < depth; i = i + 1) {
+        if (i > 0) {
+            strcat(out_path, "/");
+        }
+        strcat(out_path, (PU8)components[i]);
+    }
 }
 
-U0 shell_cmd_dir() {
-    FAT12_VOL *vol = &g_fat12_volume;
-    U8 buffer[512];
+// ---------------------------------------------------------------------------
+// Command Implementations
+U0 shell_cmd_dir(PU8 args) {
+    U8 target_path[128];
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        strcpy(target_path, g_sh_cwd);
+    } else {
+        shell_resolve_path(args, target_path);
+    }
+
+    VFS_NODE dir_node;
+    if (!vfs_open(target_path, &dir_node)) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Directory or drive not found: %s\n", target_path);
+        g_sh_fg_color = WHITE;
+        return;
+    }
+
+    if (dir_node.type != VFS_TYPE_DIR) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Not a directory: %s\n", target_path);
+        g_sh_fg_color = WHITE;
+        return;
+    }
+
+    g_sh_fg_color = YELLOW;
+    shell_printf(" Directory of %s\n\n", target_path);
+    g_sh_fg_color = WHITE;
+
+    VFS_DIR_ENTRY entry;
+    U32 idx = 0;
     U32 file_count = 0;
     U32 total_bytes = 0;
 
-    g_sh_fg_color = YELLOW;
-    shell_puts((PU8)" Directory of A:\\\n\n");
-    g_sh_fg_color = WHITE;
-
-    for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
-        DISK_READ_SECTORS(vol->root_dir_lba + i, 1, buffer);
-        FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buffer;
-
-        for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
-            if (entry[j].Name[0] == DIR_ENTRY_END) {
-                i = vol->root_dir_sectors; // Break outer loop
-                break;
-            }
-            if (entry[j].Name[0] == DIR_ENTRY_FREE) {
-                continue;
-            }
-            // Skip Volume Label or System hidden files if needed
-            if (entry[j].Attributes & 0x08) continue; // Volume ID
-
-            U8 fname[9];
-            U8 fext[4];
-            memzero(fname, 9);
-            memzero(fext, 4);
-
-            U32 np = 0;
-            for (U32 k = 0; k < 8; k = k + 1) {
-                if (entry[j].Name[k] != ' ') {
-                    fname[np] = entry[j].Name[k];
-                    np = np + 1;
-                }
-            }
-            fname[np] = 0;
-
-            U32 ep = 0;
-            for (U32 k = 0; k < 3; k = k + 1) {
-                if (entry[j].Name[k + 8] != ' ') {
-                    fext[ep] = entry[j].Name[k + 8];
-                    ep = ep + 1;
-                }
-            }
-            fext[ep] = 0;
-
-            if (entry[j].Attributes & 0x10) {
-                shell_printf("  %-8s %-3s    <DIR>        %u bytes\n", fname, fext, entry[j].FileSize);
-            } else {
-                shell_printf("  %-8s %-3s                 %u bytes\n", fname, fext, entry[j].FileSize);
-            }
-
-            file_count = file_count + 1;
-            total_bytes = total_bytes + entry[j].FileSize;
+    while (vfs_readdir(&dir_node, idx, &entry)) {
+        if (entry.is_directory) {
+            shell_printf("  %-16s <DIR>        %u bytes\n", entry.name, entry.size);
+        } else {
+            shell_printf("  %-16s              %u bytes\n", entry.name, entry.size);
         }
+        file_count = file_count + 1;
+        total_bytes = total_bytes + entry.size;
+        idx = idx + 1;
     }
 
     g_sh_fg_color = LIGHT_GRAY;
-    shell_printf("\n  %u File(s)    %u bytes total\n", file_count, total_bytes);
+    shell_printf("\n  %u File(s)/Dir(s)    %u bytes total\n", file_count, total_bytes);
     g_sh_fg_color = WHITE;
-}
-
-// Convert user input filename string to 11-byte FAT12 8.3 formatted string
-U0 format_fat12_name(PU8 src, PU8 dst) {
-    memset(dst, ' ', 11);
-    U32 i = 0;
-    U32 name_pos = 0;
-
-    // Read name until '.' or end
-    while (src[i] != 0 && src[i] != '.' && name_pos < 8) {
-        U8 c = c_toupper(src[i]);
-        dst[name_pos] = c;
-        name_pos = name_pos + 1;
-        i = i + 1;
-    }
-
-    // Skip to '.' if name was longer than 8
-    while (src[i] != 0 && src[i] != '.') {
-        i = i + 1;
-    }
-
-    if (src[i] == '.') {
-        i = i + 1;
-        U32 ext_pos = 8;
-        while (src[i] != 0 && ext_pos < 11) {
-            dst[ext_pos] = c_toupper(src[i]);
-            ext_pos = ext_pos + 1;
-            i = i + 1;
-        }
-    }
 }
 
 U0 shell_cmd_type(PU8 args) {
@@ -232,23 +295,23 @@ U0 shell_cmd_type(PU8 args) {
         return;
     }
 
-    U8 fat_name[11];
-    format_fat12_name(args, fat_name);
+    U8 target_path[128];
+    shell_resolve_path(args, target_path);
 
-    FAT12_DIR_ENTRY entry;
-    if (FAT12_FIND_FILE(&g_fat12_volume, fat_name, &entry) == 0) {
+    VFS_NODE node;
+    if (!vfs_open(target_path, &node)) {
         g_sh_fg_color = LIGHT_RED;
-        shell_printf("File not found: %s\n", args);
+        shell_printf("File not found: %s\n", target_path);
         g_sh_fg_color = WHITE;
         return;
     }
 
-    if (entry.FileSize == 0) {
+    if (node.size == 0) {
         shell_puts((PU8)"(File is empty)\n");
         return;
     }
 
-    PU8 file_buf = (PU8)kmalloc(entry.FileSize + 1);
+    PU8 file_buf = (PU8)kmalloc(node.size + 1);
     if (file_buf == NULLPTR) {
         g_sh_fg_color = LIGHT_RED;
         shell_puts((PU8)"Error: insufficient memory to load file.\n");
@@ -256,15 +319,106 @@ U0 shell_cmd_type(PU8 args) {
         return;
     }
 
-    FAT12_READ_FILE(&g_fat12_volume, &entry, file_buf);
-    file_buf[entry.FileSize] = 0; // Null terminate
+    vfs_read(&node, 0, node.size, file_buf);
+    file_buf[node.size] = 0;
 
     shell_puts(file_buf);
-    if (file_buf[entry.FileSize - 1] != '\n') {
+    if (file_buf[node.size - 1] != '\n') {
         shell_putc('\n');
     }
 
     kfree(file_buf);
+}
+
+U0 shell_cmd_cd(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        shell_printf("Current directory: %s\n", g_sh_cwd);
+        return;
+    }
+
+    U8 target_path[128];
+    shell_resolve_path(args, target_path);
+
+    VFS_NODE node;
+    if (vfs_open(target_path, &node)) {
+        if (node.type != VFS_TYPE_DIR) {
+            g_sh_fg_color = LIGHT_RED;
+            shell_printf("Not a directory: %s\n", args);
+            g_sh_fg_color = WHITE;
+            return;
+        }
+        strcpy(g_sh_cwd, target_path);
+        U32 len = strlen(g_sh_cwd);
+        if (len > 0 && g_sh_cwd[len - 1] != '/') {
+            g_sh_cwd[len] = '/';
+            g_sh_cwd[len + 1] = 0;
+        }
+    } else {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Invalid drive or path: %s\n", args);
+        g_sh_fg_color = WHITE;
+    }
+}
+
+U0 shell_cmd_touch(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: touch <filename>\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    U8 target_path[128];
+    shell_resolve_path(args, target_path);
+
+    if (vfs_touch(target_path)) {
+        shell_printf("Created file: %s\n", target_path);
+    } else {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Failed to create file: %s\n", target_path);
+        g_sh_fg_color = WHITE;
+    }
+}
+
+U0 shell_cmd_mkdir(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: mkdir <dirname>\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    U8 target_path[128];
+    shell_resolve_path(args, target_path);
+
+    if (vfs_mkdir(target_path)) {
+        shell_printf("Created directory: %s\n", target_path);
+    } else {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Failed to create directory: %s\n", target_path);
+        g_sh_fg_color = WHITE;
+    }
+}
+
+U0 shell_cmd_rm(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: rm <filename>\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    U8 target_path[128];
+    shell_resolve_path(args, target_path);
+
+    if (vfs_remove(target_path)) {
+        shell_printf("Removed: %s\n", target_path);
+    } else {
+        g_sh_fg_color = LIGHT_RED;
+        shell_printf("Failed to remove: %s\n", target_path);
+        g_sh_fg_color = WHITE;
+    }
 }
 
 U0 shell_cmd_echo(PU8 args) {
@@ -330,6 +484,121 @@ U0 shell_cmd_panic() {
     panic("User requested kernel panic test from shell", PANIC_PROGRAM, 0x1337);
 }
 
+U0 shell_cmd_drives() {
+    vfs_list_drives();
+}
+
+U0 shell_cmd_dumpsec(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: dumpsec <drive_name> <lba_sector>\nExample: dumpsec hd0 0\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    PU8 space = strchr(args, ' ');
+    if (space == NULLPTR) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: dumpsec <drive_name> <lba_sector>\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    *space = 0;
+    PU8 dev = args;
+    U32 lba = (U32)atoi(space + 1);
+    dump_sector(dev, lba);
+}
+
+U0 shell_cmd_memdump(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: memdump <address_hex> <bytes_to_dump>\nExample: memdump 0x10000 64\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    PU8 space = strchr(args, ' ');
+    if (space == NULLPTR) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: memdump <address_hex> <bytes_to_dump>\nExample: memdump 0x10000 64\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    *space = 0;
+    PU8 addr_str = str_trim(args);
+    PU8 count_str = str_trim(space + 1);
+
+    U32 addr = atou_hex(addr_str);
+    U32 count = atou(count_str);
+
+    if (count == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Error: Invalid or zero byte count specified.\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+
+    g_sh_fg_color = LIGHT_CYAN;
+    shell_printf("=== Memory Dump [0x%08X - 0x%08X] (%u bytes) ===\n", addr, addr + count, count);
+    g_sh_fg_color = WHITE;
+
+    PU8 ptr = (PU8)addr;
+    for (U32 i = 0; i < count; i = i + 16) {
+        shell_printf("0x%08X: ", addr + i);
+        for (U32 j = 0; j < 16; j = j + 1) {
+            if (i + j < count) {
+                shell_printf("%02X ", ptr[i + j]);
+            } else {
+                shell_puts((PU8)"   ");
+            }
+        }
+        shell_puts((PU8)"  | ");
+        for (U32 j = 0; j < 16; j = j + 1) {
+            if (i + j < count) {
+                U8 c = ptr[i + j];
+                if (c >= 32 && c <= 126) {
+                    shell_printf("%c", c);
+                } else {
+                    shell_puts((PU8)".");
+                }
+            } else {
+                shell_puts((PU8)" ");
+            }
+        }
+        shell_puts((PU8)" |\n");
+    }
+}
+
+U0 shell_cmd_install(PU8 args) {
+    (VOID)args;
+    sys_install((PU8)"ram0", (PU8)"hd0");
+}
+
+U0 shell_cmd_help() {
+    g_sh_fg_color = LIGHT_CYAN;
+    shell_puts((PU8)"NopOS Shell Command Reference:\n");
+    g_sh_fg_color = WHITE;
+    shell_puts((PU8)"  help / ?                - Display this command reference\n");
+    shell_puts((PU8)"  drives                  - List all block storage devices and mounts\n");
+    shell_puts((PU8)"  cd / chdir <path|drive> - Change active drive or directory (e.g. cd C:, cd A:)\n");
+    shell_puts((PU8)"  dir / ls [path]         - List directory files\n");
+    shell_puts((PU8)"  type / cat <file>       - Print text file content\n");
+    shell_puts((PU8)"  touch / create <file>   - Create an empty file (FAT32)\n");
+    shell_puts((PU8)"  mkdir / md <dir>        - Create a directory (FAT32)\n");
+    shell_puts((PU8)"  rm / del / rmdir <item> - Delete a file or directory (FAT32)\n");
+    shell_puts((PU8)"  install                 - Install NopOS from RAMDisk to hard disk (hd0)\n");
+    shell_puts((PU8)"  dumpsec <dev> <lba>     - Dump 512 bytes raw sector in hex/ASCII grid\n");
+    shell_puts((PU8)"  memdump <addr> <len>    - Dump memory contents in hex/ASCII grid\n");
+    shell_puts((PU8)"  echo <text>             - Echo text string to console\n");
+    shell_puts((PU8)"  dcomputs <text>         - Send string to serial debug COM2 port\n");
+    shell_puts((PU8)"  mem / pmm               - Display memory allocator statistics\n");
+    shell_puts((PU8)"  vesa / info             - Display VESA VBE linear framebuffer info\n");
+    shell_puts((PU8)"  clear / cls             - Clear screen\n");
+    shell_puts((PU8)"  history                 - Display command history\n");
+    shell_puts((PU8)"  reboot                  - Perform system restart\n");
+    shell_puts((PU8)"  panic                   - Test kernel panic handler\n");
+}
+
 // ---------------------------------------------------------------------------
 // Command Dispatcher
 U0 shell_exec(PU8 line) {
@@ -349,10 +618,31 @@ U0 shell_exec(PU8 line) {
 
     if (stricmp(cmd, (PU8)"help") == 0 || strcmp(cmd, (PU8)"?") == 0) {
         shell_cmd_help();
+    } else if (stricmp(cmd, (PU8)"drives") == 0 || stricmp(cmd, (PU8)"lsdev") == 0) {
+        shell_cmd_drives();
+    } else if (stricmp(cmd, (PU8)"install") == 0) {
+        shell_cmd_install(args);
+    } else if (stricmp(cmd, (PU8)"dumpsec") == 0) {
+        shell_cmd_dumpsec(args);
+    } else if (stricmp(cmd, (PU8)"memdump") == 0 || stricmp(cmd, (PU8)"mdump") == 0) {
+        shell_cmd_memdump(args);
     } else if (stricmp(cmd, (PU8)"dir") == 0 || stricmp(cmd, (PU8)"ls") == 0) {
-        shell_cmd_dir();
+        shell_cmd_dir(args);
     } else if (stricmp(cmd, (PU8)"type") == 0 || stricmp(cmd, (PU8)"cat") == 0) {
         shell_cmd_type(args);
+    } else if (stricmp(cmd, (PU8)"cd") == 0 || stricmp(cmd, (PU8)"chdir") == 0) {
+        shell_cmd_cd(args);
+    } else if (stricmp(cmd, (PU8)"touch") == 0 || stricmp(cmd, (PU8)"create") == 0) {
+        shell_cmd_touch(args);
+    } else if (stricmp(cmd, (PU8)"mkdir") == 0 || stricmp(cmd, (PU8)"md") == 0) {
+        shell_cmd_mkdir(args);
+    } else if (stricmp(cmd, (PU8)"rmdir") == 0 || stricmp(cmd, (PU8)"rd") == 0 ||
+               stricmp(cmd, (PU8)"rm") == 0 || stricmp(cmd, (PU8)"del") == 0) {
+        shell_cmd_rm(args);
+    } else if (stricmp(cmd, (PU8)"A:") == 0 || stricmp(cmd, (PU8)"A:/") == 0 || stricmp(cmd, (PU8)"ram0:") == 0 || stricmp(cmd, (PU8)"ram0:/") == 0) {
+        strcpy(g_sh_cwd, "A:/");
+    } else if (stricmp(cmd, (PU8)"C:") == 0 || stricmp(cmd, (PU8)"C:/") == 0 || stricmp(cmd, (PU8)"hd0p1:") == 0 || stricmp(cmd, (PU8)"hd0p1:/") == 0) {
+        strcpy(g_sh_cwd, "C:/");
     } else if (stricmp(cmd, (PU8)"echo") == 0) {
         shell_cmd_echo(args);
     } else if (stricmp(cmd, (PU8)"dcomputs") == 0) {
@@ -380,7 +670,7 @@ U0 shell_exec(PU8 line) {
 // Prompt & Interactive Shell Loop
 U0 shell_print_prompt() {
     g_sh_fg_color = LIGHT_GREEN;
-    shell_puts((PU8)"nopos> ");
+    shell_printf("%s# ", g_sh_cwd);
     g_sh_fg_color = WHITE;
 }
 
@@ -417,7 +707,9 @@ U0 SHELL_RUN() {
         U8 mods = ps2_get_mods();
         if (key == 0) continue;
 
-        if(mods & (KBD_MOD_LCTRL | KBD_MOD_LALT) && key == KBD_DEL) {
+        U8 has_ctrl = (mods & (KBD_MOD_LCTRL | KBD_MOD_RCTRL)) ? 1 : 0;
+        U8 has_alt  = (mods & (KBD_MOD_LALT  | KBD_MOD_RALT))  ? 1 : 0;
+        if (has_ctrl && has_alt && key == KBD_DEL) {
             shell_cmd_reboot();
         }
         // --- Arrow Up: History Previous ---
@@ -436,7 +728,7 @@ U0 SHELL_RUN() {
 
             // Erase current on-screen line
             while (len > 0) {
-                shell_putc('\b');
+                shell_putc(0x08);
                 len = len - 1;
             }
             strcpy(line_buf, (PU8)g_sh_history[g_sh_hist_index]);
@@ -452,7 +744,7 @@ U0 SHELL_RUN() {
             if (g_sh_hist_index < (I32)g_sh_hist_count - 1) {
                 g_sh_hist_index = g_sh_hist_index + 1;
                 while (len > 0) {
-                    shell_putc('\b');
+                    shell_putc(0x08);
                     len = len - 1;
                 }
                 strcpy(line_buf, (PU8)g_sh_history[g_sh_hist_index]);
@@ -462,7 +754,7 @@ U0 SHELL_RUN() {
                 // Restore original saved line
                 g_sh_hist_index = -1;
                 while (len > 0) {
-                    shell_putc('\b');
+                    shell_putc(0x08);
                     len = len - 1;
                 }
                 strcpy(line_buf, (PU8)g_sh_saved_line);
@@ -473,11 +765,11 @@ U0 SHELL_RUN() {
         }
 
         // --- Backspace ---
-        if (key == '\b') {
+        if (key == 0x08) {
             if (len > 0) {
                 len = len - 1;
                 line_buf[len] = 0;
-                shell_putc('\b');
+                shell_putc(0x08);
             }
             continue;
         }
