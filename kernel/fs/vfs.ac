@@ -46,14 +46,17 @@ typedef struct _T_VFS_MOUNT {
 } T_VFS_MOUNT;
 
 T_VFS_MOUNT g_vfs_mounts[VFS_MAX_MOUNTS];
+U8 g_sh_cwd[64];
 
 U0 vfs_init() {
     dcomputs("[VFS] Initializing Virtual File System...");
     memzero((PU8)g_vfs_mounts, sizeof(T_VFS_MOUNT) * VFS_MAX_MOUNTS);
+    strcpy(g_sh_cwd, "A:/");
     dcomputs("[VFS] Virtual File System initialized.");
 }
 
 U0 vfs_resolve_alias(PU8 path, PU8 out_resolved) {
+    dcomprintf("[VFS] Resolving path: '%s'\n", path);
     if (strncmp(path, "A:", 2) == 0 || strncmp(path, "a:", 2) == 0) {
         strcpy(out_resolved, "ram0:/");
         PU8 rest = path + 2;
@@ -67,6 +70,7 @@ U0 vfs_resolve_alias(PU8 path, PU8 out_resolved) {
     } else {
         strcpy(out_resolved, path);
     }
+    dcomprintf("[VFS] Resolved path: '%s'\n", out_resolved);
 }
 
 U8 vfs_mount(PU8 dev_name, PU8 mount_path, U8 fs_type) {
@@ -103,10 +107,9 @@ U8 vfs_mount(PU8 dev_name, PU8 mount_path, U8 fs_type) {
     return 0;
 }
 
-local I32 vfs_find_mount(PU8 path) {
+I32 vfs_find_mount(PU8 path) {
     U8 resolved[128];
     vfs_resolve_alias(path, resolved);
-
     for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
         if (g_vfs_mounts[i].used) {
             U32 mlen = strlen(g_vfs_mounts[i].mount_path);
@@ -159,6 +162,7 @@ U8 vfs_open(PU8 path, VFS_NODE *out_node) {
             out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
             out_node->size = entry.FileSize;
             out_node->cluster = (U32)entry.FirstClusterLow;
+            dcomprintf("[VFS] File node initialized: '%s'\n", out_node->name);
             return 1;
         }
     } else if (m->fs_type == VFS_FS_FAT32) {
@@ -167,6 +171,7 @@ U8 vfs_open(PU8 path, VFS_NODE *out_node) {
             out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
             out_node->size = entry.FileSize;
             out_node->cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+            dcomprintf("[VFS] File node initialized: '%s'\n", out_node->name);
             return 1;
         }
     }
@@ -190,10 +195,55 @@ U32 vfs_read(VFS_NODE *node, U32 offset, U32 size, PU8 buffer) {
         entry.FirstClusterHigh = (U16)(node->cluster >> 16);
         entry.FirstClusterLow = (U16)(node->cluster & 0xFFFF);
         entry.FileSize = node->size;
+        dcomprintf("[VFS] Reading file: '%s'\n", node->name);
         fat32_read_file(&m->fat32_vol, &entry, buffer);
         return node->size;
     }
     return 0;
+}
+
+local U32 vfs_get_parent_dir_cluster(FAT32_VOL *vol, PU8 path, PU8 out_filename) {
+    PU8 last_slash = strrchr(path, '/');
+    if (last_slash == NULLPTR) {
+        strcpy(out_filename, path);
+        return vol->root_cluster;
+    }
+
+    U8 dir_part[128];
+    U32 dlen = (U32)(last_slash - path);
+    strncpy(dir_part, path, dlen);
+    dir_part[dlen] = 0;
+    strcpy(out_filename, last_slash + 1);
+
+    U32 curr_cluster = vol->root_cluster;
+    PU8 p = dir_part;
+    while (*p != 0) {
+        PU8 slash = strchr(p, '/');
+        U8 component[32];
+        if (slash != NULLPTR) {
+            U32 clen = (U32)(slash - p);
+            strncpy(component, p, clen);
+            component[clen] = 0;
+            p = slash + 1;
+        } else {
+            strcpy(component, p);
+            p = p + strlen(p);
+        }
+
+        if (strlen(component) == 0) continue;
+
+        FAT12_DIR_ENTRY entry;
+        if (fat32_find_entry(vol, curr_cluster, component, &entry)) {
+            if (entry.Attributes & 0x10) {
+                curr_cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+    return curr_cluster;
 }
 
 U32 vfs_write(VFS_NODE *node, PU8 data, U32 size) {
@@ -203,7 +253,12 @@ U32 vfs_write(VFS_NODE *node, PU8 data, U32 size) {
     T_VFS_MOUNT *m = &g_vfs_mounts[node->mount_id];
 
     if (m->fs_type == VFS_FS_FAT32) {
-        fat32_create_file(&m->fat32_vol, m->fat32_vol.root_cluster, node->name, data, size);
+        U8 filename[64];
+        U32 dir_cluster = vfs_get_parent_dir_cluster(&m->fat32_vol, node->name, filename);
+        if (dir_cluster == 0) {
+            return 0;
+        }
+        fat32_create_file(&m->fat32_vol, dir_cluster, filename, data, size);
         return size;
     }
     return 0;
@@ -221,8 +276,8 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
         U32 match_count = 0;
 
         for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
-            fat12_read_sectors_mem(vol, vol->root_dir_lba + i, 1, buffer);
-            FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buffer;
+            PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
+            FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
 
             for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
                 if (entry[j].Name[0] == DIR_ENTRY_END) {
@@ -260,7 +315,8 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
         return 0;
     } else if (m->fs_type == VFS_FS_FAT32) {
         U8 cluster_buf[4096];
-        fat32_read_cluster(&m->fat32_vol, m->fat32_vol.root_cluster, cluster_buf);
+        U32 target_cluster = (dir_node->cluster != 0) ? dir_node->cluster : m->fat32_vol.root_cluster;
+        fat32_read_cluster(&m->fat32_vol, target_cluster, cluster_buf);
         U32 entries = m->fat32_vol.bytes_per_cluster / 32;
 
         U32 match_count = 0;
@@ -323,7 +379,11 @@ U8 vfs_mkdir(PU8 path) {
     }
     if (*rel_path == '/') rel_path = rel_path + 1;
 
-    return fat32_mkdir(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path);
+    U8 dirname[64];
+    U32 dir_cluster = vfs_get_parent_dir_cluster(&m->fat32_vol, rel_path, dirname);
+    if (dir_cluster == 0) return 0;
+
+    return fat32_mkdir(&m->fat32_vol, dir_cluster, dirname);
 }
 
 U8 vfs_touch(PU8 path) {
@@ -348,7 +408,11 @@ U8 vfs_touch(PU8 path) {
     }
     if (*rel_path == '/') rel_path = rel_path + 1;
 
-    return fat32_create_file(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path, (PU8)"", 0);
+    U8 filename[64];
+    U32 dir_cluster = vfs_get_parent_dir_cluster(&m->fat32_vol, rel_path, filename);
+    if (dir_cluster == 0) return 0;
+
+    return fat32_create_file(&m->fat32_vol, dir_cluster, filename, (PU8)"", 0);
 }
 
 U8 vfs_remove(PU8 path) {
