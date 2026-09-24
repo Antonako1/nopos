@@ -37,12 +37,25 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# --- 0. Increment Build Number in BUILDNUM.AH ---
+BUILDNUM_FILE="$KERNEL_DIR/BUILDNUM.AH"
+if [ -f "$BUILDNUM_FILE" ]; then
+    CURRENT_BUILD=$(grep -oE '[0-9]+' "$BUILDNUM_FILE" | head -n 1 || echo 0)
+    [ -z "$CURRENT_BUILD" ] && CURRENT_BUILD=0
+    NEXT_BUILD=$((CURRENT_BUILD + 1))
+    echo "#define BUILDNUM $NEXT_BUILD" > "$BUILDNUM_FILE"
+    echo "==> Build Number: #$NEXT_BUILD"
+else
+    echo "#define BUILDNUM 1" > "$BUILDNUM_FILE"
+    echo "==> Build Number: #1"
+fi
+
 # AstraC.exe is a Windows binary: it does not understand WSL /mnt/c paths, so
 # translate every file argument to its Windows form (C:\...) before calling it.
-BOOTLOADER_WIN="$(wslpath -w "$BOOT_DIR/BOOTLOADER.AS")"
+BOOTLOADER_WIN="$(wslpath -w "$BOOT_DIR/BOOTL.AS")"
 BOOT_MBR_WIN="$(wslpath -w "$BOOT_DIR/BOOT_MBR.AS")"
-FAT32_VBR_WIN="$(wslpath -w "$BOOT_DIR/FAT32_VBR.AS")"
-SECOND_STAGE_WIN="$(wslpath -w "$BOOT_DIR/SECOND_STAGE.AS")"
+FAT32_VBR_WIN="$(wslpath -w "$BOOT_DIR/VBR32.AS")"
+SECOND_STAGE_WIN="$(wslpath -w "$BOOT_DIR/SSTAGE2.AS")"
 KERNEL_WIN="$(wslpath -w "$KERNEL_DIR/kernel.ac")"
 
 echo "==> [1/5] Assemble floppy bootloader"
@@ -59,10 +72,10 @@ echo "==> [4/5] Compile kernel"
 "$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug #verbose
 
 echo "==> [5/5] Create FAT12 floppy image & Hard Disk image"
-HDD_IMG="$OUT_DIR/os_disk.img"
-dd if=/dev/zero of="$HDD_IMG" bs=1M count=32 status=none
-
+# HDD_IMG="$OUT_DIR/os_disk.img"
+# dd if=/dev/zero of="$HDD_IMG" bs=1M count=1 status=none
 FLOPPY="$OUT_DIR/floppy.img"
+
 
 # 2880 sectors of 512 bytes = 1474560 bytes (standard 3.5" HD floppy).
 dd if=/dev/zero of="$FLOPPY" bs=512 count=2880 status=none
@@ -71,9 +84,11 @@ dd if=/dev/zero of="$FLOPPY" bs=512 count=2880 status=none
 # an empty root directory.
 mformat -i "$FLOPPY" -f 1440 ::
 
-# Place the two main boot payloads into the filesystem under 8.3 names.
-mcopy -i "$FLOPPY" "$BOOT_DIR/SECOND_STAGE.BIN" ::STAGE2.BIN
+# Place the main boot payloads into the filesystem under 8.3 names.
+mcopy -i "$FLOPPY" "$BOOT_DIR/SSTAGE2.BIN" ::STAGE2.BIN
 mcopy -i "$FLOPPY" "$KERNEL_DIR/kernel.BIN"     ::KERNEL.BIN
+mcopy -i "$FLOPPY" "$BOOT_DIR/BOOT_MBR.BIN" ::BOOTMBR.BIN
+mcopy -i "$FLOPPY" "$BOOT_DIR/VBR32.BIN"    ::VBR32.BIN
 
 # Function to parse and stage a CONTAINER file
 process_container() {
@@ -178,21 +193,21 @@ if [ -d "$ROOT_DIR" ]; then
     fi
 fi
 
-# Replace mformat's boot sector with ours. BOOTLOADER.AS already contains a
+# Replace mformat's boot sector with ours. BOOTL.AS already contains a
 # BPB identical to mformat's, so the filesystem stays consistent.
-dd if="$BOOT_DIR/BOOTLOADER.BIN" of="$FLOPPY" bs=512 count=1 conv=notrunc status=none
+dd if="$BOOT_DIR/BOOTL.BIN" of="$FLOPPY" bs=512 count=1 conv=notrunc status=none
 
 # The bootsector must be exactly 512 bytes and end in 0x55 0xAA.
-BOOT_SIZE="$(stat -c%s "$BOOT_DIR/BOOTLOADER.BIN")"
+BOOT_SIZE="$(stat -c%s "$BOOT_DIR/BOOTL.BIN")"
 if [ "$BOOT_SIZE" -ne 512 ]; then
-    echo "ERROR: BOOTLOADER.BIN is $BOOT_SIZE bytes (expected 512)" >&2
+    echo "ERROR: BOOTL.BIN is $BOOT_SIZE bytes (expected 512)" >&2
     exit 1
 fi
 
 echo
 echo "Done."
 echo "  bootsector:    $BOOT_SIZE bytes"
-echo "  second stage:  $(stat -c%s "$BOOT_DIR/SECOND_STAGE.BIN") bytes"
+echo "  second stage:  $(stat -c%s "$BOOT_DIR/SSTAGE2.BIN") bytes"
 echo "  kernel:        $(stat -c%s "$KERNEL_DIR/kernel.BIN") bytes"
 echo "  floppy.img:    $(stat -c%s "$FLOPPY") bytes"
 echo
