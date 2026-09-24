@@ -1,0 +1,238 @@
+/*
+Function table:
+  U0 sys_install(PU8 src_dev, PU8 dst_dev);
+  U0 dump_sector(PU8 drive_name, U32 lba);
+*/
+
+U0 dump_sector(PU8 drive_name, U32 lba) {
+    U8 sector[512];
+    memzero(sector, 512);
+
+    U8 drive_id = 0;
+    if (strcmp(drive_name, "ram0") == 0) {
+        ramdisk_read_sectors(lba, 1, sector);
+    } else {
+        ata_read_sector(lba, sector);
+    }
+
+    shell_printf("=== Sector Dump [%s LBA %d] ===\n", drive_name, lba);
+    for (U32 i = 0; i < 512; i = i + 16) {
+        shell_printf("0x%04X: ", i);
+        for (U32 j = 0; j < 16; j = j + 1) {
+            shell_printf("%02X ", sector[i + j]);
+        }
+        shell_puts((PU8)"  | ");
+        for (U32 j = 0; j < 16; j = j + 1) {
+            U8 c = sector[i + j];
+            if (c >= 32 && c <= 126) {
+                shell_printf("%c", c);
+            } else {
+                shell_puts((PU8)".");
+            }
+        }
+        shell_puts((PU8)" |\n");
+    }
+}
+
+U0 install_copy_tree(PU8 src_path, PU8 dst_path) {
+    VFS_NODE dir_node;
+    if (!vfs_open(src_path, &dir_node)) {
+        return;
+    }
+
+    VFS_DIR_ENTRY entry;
+    U32 idx = 0;
+
+    while (vfs_readdir(&dir_node, idx, &entry)) {
+        idx = idx + 1;
+
+        if (strcmp(entry.name, ".") == 0 || strcmp(entry.name, "..") == 0) {
+            continue;
+        }
+
+        U8 sub_src[128];
+        strcpy(sub_src, src_path);
+        U32 slen = strlen(sub_src);
+        if (slen > 0 && sub_src[slen - 1] != '/') {
+            strcat(sub_src, "/");
+        }
+        strcat(sub_src, entry.name);
+
+        U8 sub_dst[128];
+        strcpy(sub_dst, dst_path);
+        U32 dlen = strlen(sub_dst);
+        if (dlen > 0 && sub_dst[dlen - 1] != '/') {
+            strcat(sub_dst, "/");
+        }
+        strcat(sub_dst, entry.name);
+
+        if (entry.is_directory) {
+            vfs_mkdir(sub_dst);
+            shell_printf("  --> [DIR]  %s\n", sub_dst);
+            install_copy_tree(sub_src, sub_dst);
+        } else {
+            if (stricmp(entry.name, "STAGE2.BIN") == 0 || stricmp(entry.name, "KERNEL.BIN") == 0) {
+                continue;
+            }
+
+            VFS_NODE file_node;
+            if (vfs_open(sub_src, &file_node)) {
+                PU8 buf = NULLPTR;
+                if (file_node.size > 0) {
+                    buf = (PU8)kmalloc(file_node.size + 512);
+                    if (buf != NULLPTR) {
+                        vfs_read(&file_node, 0, file_node.size, buf);
+                    }
+                }
+
+                VFS_NODE dst_node;
+                I32 mid = vfs_find_mount(sub_dst);
+                if (mid >= 0) {
+                    dst_node.mount_id = (U8)mid;
+                    U8 resolved[128];
+                    vfs_resolve_alias(sub_dst, resolved);
+                    T_VFS_MOUNT *m = &g_vfs_mounts[mid];
+                    PU8 rel = resolved;
+                    if (strncmp(resolved, m->mount_path, strlen(m->mount_path)) == 0) {
+                        rel = resolved + strlen(m->mount_path);
+                    } else if (strncmp(resolved, m->dev_name, strlen(m->dev_name)) == 0) {
+                        rel = resolved + strlen(m->dev_name);
+                        if (*rel == ':') rel = rel + 1;
+                    }
+                    if (*rel == '/') rel = rel + 1;
+                    strcpy(dst_node.name, rel);
+
+                    vfs_write(&dst_node, buf, file_node.size);
+                    shell_printf("  --> [FILE] %-20s (%u bytes)\n", sub_dst, file_node.size);
+                }
+
+                if (buf != NULLPTR) {
+                    kfree(buf);
+                }
+            }
+        }
+    }
+}
+
+U0 sys_install(PU8 src_dev, PU8 dst_dev) {
+    shell_puts((PU8)"=================================================\n");
+    shell_puts((PU8)"       NopOS Bare-Metal Hard Disk Installer      \n");
+    shell_puts((PU8)"=================================================\n");
+    shell_printf("[INSTALL] Source: %s (FAT12 iPXE RAMDisk)\n", src_dev);
+    shell_printf("[INSTALL] Target: %s (ATA Hard Disk)\n", dst_dev);
+
+    U8 mbr_buf[512];
+    U8 vbr_buf[512];
+    PU8 pmbr = NULLPTR;
+    PU8 pvbr = NULLPTR;
+
+    VFS_NODE boot_node;
+    if (vfs_open((PU8)"ram0:/BOOTMBR.BIN", &boot_node)) {
+        vfs_read(&boot_node, 0, 512, mbr_buf);
+        pmbr = mbr_buf;
+        shell_puts((PU8)"  --> Loaded BOOTMBR.BIN stage 1 MBR bootloader.\n");
+    } else {
+        shell_puts((PU8)"  WARNING: BOOTMBR.BIN not found on RAMDisk!\n");
+    }
+
+    if (vfs_open((PU8)"ram0:/VBR32.BIN", &boot_node)) {
+        vfs_read(&boot_node, 0, 512, vbr_buf);
+        pvbr = vbr_buf;
+        shell_puts((PU8)"  --> Loaded VBR32.BIN stage 2 FAT32 bootloader.\n");
+    } else {
+        shell_puts((PU8)"  WARNING: VBR32.BIN not found on RAMDisk!\n");
+    }
+
+    // 1. Partition Target HDD with MBR (LBA 2048 start, 65536 sectors)
+    shell_puts((PU8)"[INSTALL] [1/4] Writing MBR Partition Table & Code to LBA 0...\n");
+    mbr_write_table(0, 2048, 65536, pmbr);
+
+    // 2. Format hd0p1 as FAT32
+    shell_puts((PU8)"[INSTALL] [2/4] Formatting hd0p1 as FAT32 & Writing VBR at LBA 2048...\n");
+    fat32_format(0, 2048, 65536, (PU8)"NOPOS DISK", pvbr);
+
+    // 3. Mount FAT32 partition to VFS
+    shell_puts((PU8)"[INSTALL] [3/4] Mounting FAT32 partition hd0p1 to VFS...\n");
+    vfs_mount("hd0p1", "/hd0p1", VFS_FS_FAT32);
+
+    // 4. Transfer Core Payload Files from RAMDisk to FAT32 Hard Disk
+    shell_puts((PU8)"[INSTALL] [4/4] Copying System Payload Files to hd0p1:/ ...\n");
+
+    VFS_NODE src_node;
+
+    // Copy STAGE2.BIN
+    if (vfs_open((PU8)"ram0:/STAGE2.BIN", &src_node)) {
+        PU8 copy_buf = (PU8)kmalloc(src_node.size + 512);
+        if (copy_buf != NULLPTR) {
+            vfs_read(&src_node, 0, src_node.size, copy_buf);
+            VFS_NODE dst_node;
+            strcpy(dst_node.name, "STAGE2.BIN");
+            dst_node.mount_id = 0;
+            for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+                if (strcmp(g_vfs_mounts[i].dev_name, "hd0p1") == 0) {
+                    dst_node.mount_id = (U8)i;
+                    break;
+                }
+            }
+            vfs_write(&dst_node, copy_buf, src_node.size);
+            kfree(copy_buf);
+            shell_printf("  --> STAGE2.BIN (%d bytes) copied successfully.\n", src_node.size);
+        }
+    } else {
+        shell_puts((PU8)"  WARNING: STAGE2.BIN not found on source!\n");
+    }
+
+    // Copy KERNEL.BIN
+    if (vfs_open((PU8)"ram0:/KERNEL.BIN", &src_node)) {
+        PU8 copy_buf = (PU8)kmalloc(src_node.size + 512);
+        if (copy_buf != NULLPTR) {
+            vfs_read(&src_node, 0, src_node.size, copy_buf);
+            VFS_NODE dst_node;
+            strcpy(dst_node.name, "KERNEL.BIN");
+            dst_node.mount_id = 0;
+            for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+                if (strcmp(g_vfs_mounts[i].dev_name, "hd0p1") == 0) {
+                    dst_node.mount_id = (U8)i;
+                    break;
+                }
+            }
+            vfs_write(&dst_node, copy_buf, src_node.size);
+            kfree(copy_buf);
+            shell_printf("  --> KERNEL.BIN (%d bytes) copied successfully.\n", src_node.size);
+        }
+    } else {
+        shell_puts((PU8)"  WARNING: KERNEL.BIN not found on source!\n");
+    }
+
+    // Interactive Prompt: Copy all remaining files recursively
+    g_sh_fg_color = LIGHT_CYAN;
+    shell_puts((PU8)"\nCopy all remaining files from A:/ to C:/ recursively? (y/n): ");
+    g_sh_fg_color = WHITE;
+
+    U8 choice = 0;
+    while (1) {
+        while (!ps2_key_ready()) {}
+        U8 k = ps2_getc();
+        if (k == 'y' || k == 'Y') {
+            choice = 'y';
+            shell_puts((PU8)"y\n");
+            break;
+        }
+        if (k == 'n' || k == 'N') {
+            choice = 'n';
+            shell_puts((PU8)"n\n");
+            break;
+        }
+    }
+
+    if (choice == 'y') {
+        shell_puts((PU8)"[INSTALL] Recursively copying payload files from A:/ to C:/ ...\n");
+        install_copy_tree((PU8)"A:/", (PU8)"C:/");
+    }
+
+    strcpy(g_sh_cwd, "C:/");
+    shell_puts((PU8)"[INSTALL] Switched active shell drive to C:/\n");
+    shell_puts((PU8)"=================================================\n");
+    shell_puts((PU8)"  SUCCESS: NopOS Installed to Hard Disk (hd0p1)  \n");
+    shell_puts((PU8)"=================================================\n");
+}

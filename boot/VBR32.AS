@@ -1,10 +1,10 @@
-; boot/FAT32_VBR.AS — FAT32 Volume Boot Record (512 bytes)
+; boot/VBR32.AS — FAT32 Volume Boot Record (512 bytes)
 ;
 ; Loaded by MBR to 0x7C00. Parses FAT32 BPB/EBPB, traverses 32-bit FAT cluster
 ; chain for STAGE2.BIN, loads STAGE2.BIN to 0x7E00 using INT 13h Extensions,
 ; and jumps to 0x0000:0x7E00.
 ;
-; Built with: AstraC asm FAT32_VBR.AS bits 16 org 7C00 arch i386
+; Built with: AstraC asm VBR32.AS bits 16 org 7C00 arch i386
 
 .org 0x7C00
 .use16
@@ -181,8 +181,6 @@ read_cluster:
 
 ; Given cluster in EAX, reads next cluster from FAT32 table into EAX
 get_next_cluster:
-    ; FAT Entry LBA = hidden_sectors + reserved_sectors + (cluster * 4 / 512)
-    ; Sector Offset = (cluster * 4) % 512
     MOV EBX, EAX
     SHL EAX, 2                 ; Byte offset in FAT = cluster * 4
     MOV ECX, EAX
@@ -224,8 +222,8 @@ print_string:
 data_lba_start:   DD 0
 current_cluster:  DD 0
 stage2_name:      DB "STAGE2  BIN"
-msg_not_found:    DB "STAGE2.BIN not found!", 13, 10, 0
-msg_disk_err:     DB "Disk read error!", 13, 10, 0
+msg_not_found:    DB "STAGE2.BIN not found!", 0
+msg_disk_err:     DB "dr err!", 0
 
 dap_struct:
 dap_size:       DB 16

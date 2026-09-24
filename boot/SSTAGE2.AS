@@ -1,12 +1,10 @@
-; boot/SECOND_STAGE.AS — second-stage loader
+; boot/SSTAGE2.AS — second-stage loader
 ;
 ; Loads KERNEL.BIN from the FAT12 filesystem into 0x10000, enables the A20
-; gate, switches to 32-bit protected mode, and jumps to the kernel.
+; gate, passes boot parameters (boot_drive, boot_type, ramdisk_base 0x3FA65000),
+; switches to 32-bit protected mode, and jumps to the kernel.
 ;
-; On entry DL still holds the boot drive (set by the boot sector). The BPB
-; geometry below must match the FAT12 BPB in BOOTLOADER.AS.
-;
-; Built with: AstraC asm SECOND_STAGE.AS bits 16 org 7E00
+; Built with: AstraC asm SSTAGE2.AS bits 16 org 7E00
 
 .org 0x7E00
 .use16
@@ -17,6 +15,8 @@
 
 main:
     MOV [drive], DL
+    MOVZX EAX, DL
+    MOV [boot_drive], EAX
 
     ; Real-mode segments: DS=ES=SS=0, stack just below the boot sector.
     XOR AX, AX
@@ -24,6 +24,20 @@ main:
     MOV ES, AX
     MOV SS, AX
     MOV SP, 0x7C00
+
+    CMP DL, 0x80
+    JAE .is_hdd
+
+    MOV DWORD [boot_type], 1
+    MOV DWORD [ramdisk_base], 0x3FA65000
+    MOV DWORD [ramdisk_size], 0x00168000
+    JMP .boot_info_done
+
+.is_hdd:
+    MOV DWORD [boot_type], 2
+    MOV DWORD [ramdisk_base], 0
+    MOV DWORD [ramdisk_size], 0
+.boot_info_done:
 
     ; Load the FAT (9 sectors) into 0x2100.
     MOV AX, 1
@@ -121,7 +135,6 @@ main:
     LGDT [gdt_desc]
 
     ; Set PE (protected mode enable) in CR0.
-    ; CR0 moves are hand-encoded: the assembler mis-encodes EAX in .use16.
     DB 0x0F, 0x20, 0xC0     ; MOV EAX, CR0
     DB 0x83, 0xC8, 0x01     ; OR  EAX, 1
     DB 0x0F, 0x22, 0xC0     ; MOV CR0, EAX
@@ -188,8 +201,6 @@ read_sector:
     RET
 
 ; gather_e820: Query the BIOS E820 memory map and fill kernel_table.
-;   INT 15h, AX=0xE820. Each 20-byte entry is written to ES:DI; the entry
-;   count is stored in e820cnt. Trashes AX, BX, CX, DX, DI, BP.
 gather_e820:
     XOR AX, AX
     MOV ES, AX                  ; ES = 0
@@ -199,36 +210,32 @@ gather_e820:
 .e820_next:
     MOV EAX, 0xE820
     MOV EDX, 0x534D4150         ; 'SMAP'
-    MOV ECX, 20                 ; E820_ENTRY size (no ACPI 3.0 fields)
+    MOV ECX, 20                 ; E820_ENTRY size
     INT 0x15
-    JC .e820_done               ; error / E820 unsupported
-    CMP EAX, 0x534D4150         ; BIOS must echo 'SMAP'
+    JC .e820_done
+    CMP EAX, 0x534D4150
     JNE .e820_done
-    ADD DI, 20                  ; entry written; advance to next slot
+    ADD DI, 20
     INC BP
-    CMP BP, 32                  ; cap at E820_MAX_ENTRIES
+    CMP BP, 32
     JAE .e820_done
-    TEST EBX, EBX               ; EBX == 0 => last entry
+    TEST EBX, EBX
     JNZ .e820_next
 .e820_done:
-    MOV [e820cnt], BP           ; store count (high word stays zero)
+    MOV [e820cnt], BP
     RET
 
 ; init_svga: Detect VBE, query mode info for SVGA_TARGET_MODE, and set it.
-;   Fills vesa_table (VESA_INFO) and vbe_table (VBE_MODE_INFO). Trashes
-;   AX, BX, CX, DI, ES. Does nothing if VBE is unsupported.
 init_svga:
     XOR AX, AX
     MOV ES, AX
 
-    ; Get VBE controller information (INT 10h AX=4F00).
     MOV AX, 0x4F00
     MOV DI, vesa_table
     INT 0x10
-    CMP AX, 0x004F              ; AL=4F (supported) and AH=0 (success)
+    CMP AX, 0x004F
     JNE .done
 
-    ; Get VBE mode information for the target mode (INT 10h AX=4F01).
     MOV AX, 0x4F01
     MOV CX, SVGA_TARGET_MODE
     MOV DI, vbe_table
@@ -236,8 +243,6 @@ init_svga:
     CMP AX, 0x004F
     JNE .done
 
-    ; Set the video mode (INT 10h AX=4F02). Bit 14 requests a linear
-    ; framebuffer so VBE reports a physical base address in PhysBasePtr.
     MOV AX, 0x4F02
     MOV BX, SVGA_TARGET_MODE
     OR  BX, 0x4000
@@ -247,7 +252,7 @@ init_svga:
 .done:
     RET
 
-; ── GDT (flat 4 GiB segments; descriptors hand-encoded as DB) ──────────────
+; ── GDT (flat 4 GiB segments) ───────────────────────────────────────────────
 gdt_start:
     DB 0, 0, 0, 0, 0, 0, 0, 0       ; null descriptor
     DB 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9A, 0xCF, 0x00  ; code (ring 0, 32-bit)
@@ -257,8 +262,6 @@ gdt_end:
 gdt_desc:
     DW gdt_end - gdt_start - 1       ; limit
     DD gdt_start                     ; base
-
-
 
 ; ── 32-bit entry ────────────────────────────────────────────────────────────
 .use32
@@ -271,20 +274,13 @@ pm_entry:
     MOV SS, AX
     MOV ESP, 0x90000    ; stack at 576 KiB
 
-    ; Pass the KERNEL_TABLE* as the first argument to the kernel's _start().
     MOV EAX, kernel_table
     PUSH EAX
 
-    ; Enter the kernel (register-indirect to avoid a relative-offset bug).
     MOV EAX, 0x10000
     CALL EAX
 
 .data
-; KERNEL_TABLE passed to the kernel. Layout must match kernel/kernel.ah:
-;     E820_ENTRY    e820entries[E820_MAX_ENTRIES];  // 32 * 20 = 640 bytes
-;     U32           e820cnt;                          // 4 bytes
-;     VESA_INFO     vesa_info;                        // 512 bytes
-;     VBE_MODE_INFO vbe_mode_info;                    // 256 bytes
 kernel_table:
     .times 640 DB 0             ; 32 E820_ENTRY slots (20 bytes each)
 e820cnt: DD 0
@@ -292,3 +288,7 @@ vesa_table:
     .times 512 DB 0             ; VESA_INFO (VBE controller info)
 vbe_table:
     .times 256 DB 0             ; VBE_MODE_INFO (mode info)
+boot_drive:   DD 0
+boot_type:    DD 0
+ramdisk_base: DD 0
+ramdisk_size: DD 0
