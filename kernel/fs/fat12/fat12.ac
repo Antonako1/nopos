@@ -154,84 +154,93 @@ PU8 FAT12_GET_FILE_PTR(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry) {
   return vol->ram_base + (lba * vol->bpb.BytesPerSector);
 }
 
-U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
+U0 fat_to_83_name(PU8 src, PU8 dst) {
+  memset(dst, ' ', 11);
+  if (src == NULLPTR || *src == 0) return;
+
+  if (strcmp(src, ".") == 0) {
+    dst[0] = '.';
+    return;
+  }
+  if (strcmp(src, "..") == 0) {
+    dst[0] = '.';
+    dst[1] = '.';
+    return;
+  }
+
+  U32 ni = 0;
+  PU8 p = src;
+  while (*p != 0 && *p != '.' && ni < 8) {
+    dst[ni] = c_toupper(*p);
+    ni = ni + 1;
+    p = p + 1;
+  }
+  if (*p == '.') {
+    p = p + 1;
+    U32 ei = 8;
+    while (*p != 0 && ei < 11) {
+      dst[ei] = c_toupper(*p);
+      ei = ei + 1;
+      p = p + 1;
+    }
+  }
+}
+
+U8 fat12_find_entry(FAT12_VOL *vol, U32 dir_cluster, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
   if (!vol || !vol->ram_base || !filename || !out_entry) {
     return 0;
   }
 
-  /*
-   * Convert normal filename:
-   *   KERNEL.BIN -> KERNEL  BIN
-   */
   U8 target[11];
-  for (U32 k = 0; k < 11; k = k + 1) {
-    target[k] = ' ';
-  }
+  fat_to_83_name(filename, target);
 
-  U32 pos = 0;
-  U32 name_pos = 0;
-  U32 ext_pos = 0;
+  if (dir_cluster == 0) {
+    for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
+      PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
+      FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
 
-  while (filename[pos] != 0 && filename[pos] != '.') {
-    if (name_pos >= 8) {
-      return 0;
-    }
-    U8 c = filename[pos];
-    if (c >= 'a' && c <= 'z') {
-      c = c - 'a' + 'A';
-    }
-    target[name_pos] = c;
-    name_pos = name_pos + 1;
-    pos = pos + 1;
-  }
+      for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+        if (entry[j].Name[0] == DIR_ENTRY_END) {
+          return 0;
+        }
+        if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+          continue;
+        }
 
-  if (filename[pos] == '.') {
-    pos = pos + 1;
-    while (filename[pos] != 0) {
-      if (ext_pos >= 3) {
-        return 0;
-      }
-      U8 c = filename[pos];
-      if (c >= 'a' && c <= 'z') {
-        c = c - 'a' + 'A';
-      }
-      target[8 + ext_pos] = c;
-      ext_pos = ext_pos + 1;
-      pos = pos + 1;
-    }
-  }
-
-  for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
-    PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
-    FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
-
-    for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
-      if (entry[j].Name[0] == DIR_ENTRY_END) {
-        return 0;
-      }
-      if (entry[j].Name[0] == DIR_ENTRY_FREE) {
-        continue;
-      }
-      if ((entry[j].Attributes & 0x0F) == 0x0F) {
-        continue;
-      }
-
-      U8 match = 1;
-      for (U32 k = 0; k < 11; k = k + 1) {
-        if (entry[j].Name[k] != target[k]) {
-          match = 0;
-          break;
+        if (memcmp(entry[j].Name, target, 11) == 0) {
+          *out_entry = entry[j];
+          return 1;
         }
       }
-
-      if (match) {
-        *out_entry = entry[j];
-        return 1;
-      }
     }
-  }
+    return 0;
+  } else {
+    U16 cluster = (U16)dir_cluster;
+    U8 buf[512];
+    while (cluster >= 0x002 && cluster < FAT12_EOF) {
+      FAT12_READ_CLUSTER(vol, cluster, buf);
+      FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buf;
+      for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+        if (entry[j].Name[0] == DIR_ENTRY_END) {
+          return 0;
+        }
+        if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+          continue;
+        }
 
-  return 0;
+        if (memcmp(entry[j].Name, target, 11) == 0) {
+          *out_entry = entry[j];
+          return 1;
+        }
+      }
+      cluster = FAT12_GET_FAT_ENTRY(vol, cluster);
+    }
+    return 0;
+  }
+}
+
+U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
+  return fat12_find_entry(vol, 0, filename, out_entry);
 }
 
 void FAT12_READ_FILE(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry, PU8 buffer) {
