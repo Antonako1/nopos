@@ -12,7 +12,7 @@
 #define null 0
 #endif
 
-#define DEFAULT_HEAP_PAGES 64 // 256 KB Initial Heap
+#define DEFAULT_HEAP_PAGES 1024 // 4M pages
 
 #define KHEAP_BLOCK_MAGIC0 0xDEADBEEF
 #define KHEAP_BLOCK_MAGIC1 0xFEEBDAED
