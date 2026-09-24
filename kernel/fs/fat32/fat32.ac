@@ -1,0 +1,461 @@
+/*
+Function table:
+  U0  fat32_init(U8 drive, U32 lba_start, FAT32_VOL *vol);
+  U0  fat32_format(U8 drive, U32 lba_start, U32 sector_count, PU8 label, PU8 vbr_code);
+  U32 fat32_get_fat_entry(FAT32_VOL *vol, U32 cluster);
+  U0  fat32_set_fat_entry(FAT32_VOL *vol, U32 cluster, U32 val);
+  U32 fat32_alloc_cluster(FAT32_VOL *vol);
+  U0  fat32_read_cluster(FAT32_VOL *vol, U32 cluster, PU8 buffer);
+  U0  fat32_write_cluster(FAT32_VOL *vol, U32 cluster, PU8 buffer);
+  U8  fat32_find_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name, FAT12_DIR_ENTRY *out_entry);
+  U0  fat32_read_file(FAT32_VOL *vol, FAT12_DIR_ENTRY *entry, PU8 buffer);
+  U8  fat32_create_file(FAT32_VOL *vol, U32 dir_cluster, PU8 filename, PU8 data, U32 size_bytes);
+  U8  fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname);
+  U8  fat32_remove_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name);
+*/
+
+#define FAT32_EOF           0x0FFFFFF8
+#define FAT32_BAD           0x0FFFFFF7
+#define FAT32_ATTR_LFN      0x0F
+
+typedef struct _FAT32_EBPB {
+    U8  jump[3];
+    U8  oem_name[8];
+    U16 bytes_per_sector;
+    U8  sectors_per_cluster;
+    U16 reserved_sectors;
+    U8  num_fats;
+    U16 root_entries;
+    U16 total_sectors16;
+    U8  media_type;
+    U16 sectors_per_fat16;
+    U16 sectors_per_track;
+    U16 num_heads;
+    U32 hidden_sectors;
+    U32 total_sectors32;
+
+    // Extended FAT32 EBPB
+    U32 sectors_per_fat32;
+    U16 ext_flags;
+    U16 fs_version;
+    U32 root_cluster;
+    U16 fs_info_sector;
+    U16 backup_boot_sector;
+    U8  reserved[12];
+    U8  drive_number;
+    U8  reserved1;
+    U8  boot_signature;
+    U32 volume_id;
+    U8  volume_label[11];
+    U8  fs_type[8];
+} FAT32_EBPB;
+
+typedef struct _FAT32_VOL {
+    U8         drive;
+    U32        partition_lba;
+    FAT32_EBPB ebpb;
+    U32        fat_lba;
+    U32        data_lba;
+    U32        sectors_per_cluster;
+    U32        bytes_per_cluster;
+    U32        root_cluster;
+} FAT32_VOL;
+
+FAT32_VOL g_fat32_vol;
+
+local U0 disk_read_sec(U8 drive, U32 lba, U32 count, PU8 buf) {
+    if (drive == 0) {
+        for (U32 i = 0; i < count; i = i + 1) {
+            ata_read_sector(lba + i, buf + (i * 512));
+        }
+    } else {
+        ramdisk_read_sectors(lba, count, buf);
+    }
+}
+
+local U0 disk_write_sec(U8 drive, U32 lba, U32 count, PU8 buf) {
+    if (drive == 0) {
+        for (U32 i = 0; i < count; i = i + 1) {
+            ata_write_sector(lba + i, buf + (i * 512));
+        }
+    } else {
+        ramdisk_write_sectors(lba, count, buf);
+    }
+}
+
+U0 fat32_init(U8 drive, U32 lba_start, FAT32_VOL *vol) {
+    U8 sector_buf[512];
+    disk_read_sec(drive, lba_start, 1, sector_buf);
+
+    vol->drive = drive;
+    vol->partition_lba = lba_start;
+    memcpy((PU8)&vol->ebpb, sector_buf, sizeof(FAT32_EBPB));
+
+    vol->fat_lba = lba_start + vol->ebpb.reserved_sectors;
+    vol->data_lba = vol->fat_lba + (vol->ebpb.num_fats * vol->ebpb.sectors_per_fat32);
+    vol->sectors_per_cluster = (U32)vol->ebpb.sectors_per_cluster;
+    vol->bytes_per_cluster = vol->sectors_per_cluster * 512;
+    vol->root_cluster = vol->ebpb.root_cluster;
+
+    dcomprintf("[FAT32] Initialized: LBA=%d, DataLBA=%d, SectorsPerCluster=%d, RootCluster=%d\n",
+               lba_start, vol->data_lba, vol->sectors_per_cluster, vol->root_cluster);
+}
+
+U32 fat32_get_fat_entry(FAT32_VOL *vol, U32 cluster) {
+    U32 fat_sector = vol->fat_lba + ((cluster * 4) / 512);
+    U32 offset = (cluster * 4) % 512;
+    U8 sector_buf[512];
+
+    disk_read_sec(vol->drive, fat_sector, 1, sector_buf);
+    PU32 entry_ptr = (PU32)(sector_buf + offset);
+    return (*entry_ptr) & 0x0FFFFFFF;
+}
+
+U0 fat32_set_fat_entry(FAT32_VOL *vol, U32 cluster, U32 val) {
+    U32 fat_sector = vol->fat_lba + ((cluster * 4) / 512);
+    U32 offset = (cluster * 4) % 512;
+    U8 sector_buf[512];
+
+    for (U32 f = 0; f < (U32)vol->ebpb.num_fats; f = f + 1) {
+        U32 current_fat_sec = fat_sector + (f * vol->ebpb.sectors_per_fat32);
+        disk_read_sec(vol->drive, current_fat_sec, 1, sector_buf);
+        PU32 entry_ptr = (PU32)(sector_buf + offset);
+        *entry_ptr = (*entry_ptr & 0xF0000000) | (val & 0x0FFFFFFF);
+        disk_write_sec(vol->drive, current_fat_sec, 1, sector_buf);
+    }
+}
+
+U32 fat32_alloc_cluster(FAT32_VOL *vol) {
+    U32 total_clusters = (vol->ebpb.total_sectors32 - (vol->data_lba - vol->partition_lba)) / vol->sectors_per_cluster;
+    U8 sector_buf[512];
+    U32 curr_fat_sec = 0xFFFFFFFF;
+
+    for (U32 c = 2; c < total_clusters; c = c + 1) {
+        U32 sec = vol->fat_lba + ((c * 4) / 512);
+        U32 offset = (c * 4) % 512;
+        if (sec != curr_fat_sec) {
+            curr_fat_sec = sec;
+            disk_read_sec(vol->drive, curr_fat_sec, 1, sector_buf);
+        }
+        PU32 entry_ptr = (PU32)(sector_buf + offset);
+        if ((*entry_ptr & 0x0FFFFFFF) == 0) {
+            fat32_set_fat_entry(vol, c, 0x0FFFFFFF); // Mark EOF
+            return c;
+        }
+    }
+    return 0; // Disk full
+}
+
+U0 fat32_read_cluster(FAT32_VOL *vol, U32 cluster, PU8 buffer) {
+    U32 cluster_lba = vol->data_lba + ((cluster - 2) * vol->sectors_per_cluster);
+    disk_read_sec(vol->drive, cluster_lba, vol->sectors_per_cluster, buffer);
+}
+
+U0 fat32_write_cluster(FAT32_VOL *vol, U32 cluster, PU8 buffer) {
+    U32 cluster_lba = vol->data_lba + ((cluster - 2) * vol->sectors_per_cluster);
+    disk_write_sec(vol->drive, cluster_lba, vol->sectors_per_cluster, buffer);
+}
+
+U8 fat32_find_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name, FAT12_DIR_ENTRY *out_entry) {
+    U8 cluster_buf[4096];
+    U32 curr_cluster = dir_cluster;
+
+    U8 target_name[11];
+    memset(target_name, ' ', 11);
+    U32 ni = 0;
+    PU8 p = name;
+    while (*p != 0 && *p != '.' && ni < 8) {
+        target_name[ni] = c_toupper(*p);
+        ni = ni + 1;
+        p = p + 1;
+    }
+    if (*p == '.') {
+        p = p + 1;
+        U32 ei = 8;
+        while (*p != 0 && ei < 11) {
+            target_name[ei] = c_toupper(*p);
+            ei = ei + 1;
+            p = p + 1;
+        }
+    }
+
+    while (curr_cluster < FAT32_EOF && curr_cluster >= 2) {
+        fat32_read_cluster(vol, curr_cluster, cluster_buf);
+        U32 entries = vol->bytes_per_cluster / 32;
+
+        for (U32 i = 0; i < entries; i = i + 1) {
+            FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+            if (dir->Name[0] == DIR_ENTRY_END) {
+                return 0;
+            }
+            if (dir->Name[0] == DIR_ENTRY_FREE) {
+                continue;
+            }
+            if (dir->Attributes == FAT32_ATTR_LFN) {
+                continue; // Skip LFN entries
+            }
+            if (memcmp(dir->Name, target_name, 11) == 0) {
+                memcpy((PU8)out_entry, (PU8)dir, sizeof(FAT12_DIR_ENTRY));
+                return 1;
+            }
+        }
+        curr_cluster = fat32_get_fat_entry(vol, curr_cluster);
+    }
+    return 0;
+}
+
+U0 fat32_read_file(FAT32_VOL *vol, FAT12_DIR_ENTRY *entry, PU8 buffer) {
+    U32 curr_cluster = ((U32)entry->FirstClusterHigh << 16) | (U32)entry->FirstClusterLow;
+    PU8 ptr = buffer;
+
+    while (curr_cluster < FAT32_EOF && curr_cluster >= 2) {
+        fat32_read_cluster(vol, curr_cluster, ptr);
+        ptr = ptr + vol->bytes_per_cluster;
+        curr_cluster = fat32_get_fat_entry(vol, curr_cluster);
+    }
+}
+
+U8 fat32_create_file(FAT32_VOL *vol, U32 dir_cluster, PU8 filename, PU8 data, U32 size_bytes) {
+    U32 first_cluster = 0;
+
+    if (size_bytes > 0 && data != NULLPTR) {
+        first_cluster = fat32_alloc_cluster(vol);
+        if (first_cluster == 0) {
+            return 0; // Disk full
+        }
+
+        // Write file payload clusters
+        U32 curr_cluster = first_cluster;
+        U32 written_bytes = 0;
+        PU8 data_ptr = data;
+        U8 cluster_buf[4096];
+
+        while (written_bytes < size_bytes) {
+            memzero(cluster_buf, vol->bytes_per_cluster);
+
+            U32 chunk = size_bytes - written_bytes;
+            if (chunk > vol->bytes_per_cluster) {
+                chunk = vol->bytes_per_cluster;
+            }
+            memcpy(cluster_buf, data_ptr, chunk);
+            fat32_write_cluster(vol, curr_cluster, cluster_buf);
+
+            written_bytes = written_bytes + chunk;
+            data_ptr = data_ptr + chunk;
+
+            if (written_bytes < size_bytes) {
+                U32 next_cluster = fat32_alloc_cluster(vol);
+                if (next_cluster == 0) {
+                    return 0;
+                }
+                fat32_set_fat_entry(vol, curr_cluster, next_cluster);
+                curr_cluster = next_cluster;
+            }
+        }
+        fat32_set_fat_entry(vol, curr_cluster, 0x0FFFFFFF); // Mark EOF
+    }
+
+    // Format 8.3 Directory Name
+    U8 dir_name[11];
+    memset(dir_name, ' ', 11);
+    U32 ni = 0;
+    PU8 p = filename;
+    while (*p != 0 && *p != '.' && ni < 8) {
+        dir_name[ni] = c_toupper(*p);
+        ni = ni + 1;
+        p = p + 1;
+    }
+    if (*p == '.') {
+        p = p + 1;
+        U32 ei = 8;
+        while (*p != 0 && ei < 11) {
+            dir_name[ei] = c_toupper(*p);
+            ei = ei + 1;
+            p = p + 1;
+        }
+    }
+
+    // Insert Directory Entry into dir_cluster
+    U8 dir_buf[4096];
+    fat32_read_cluster(vol, dir_cluster, dir_buf);
+    U32 entries = vol->bytes_per_cluster / 32;
+
+    for (U32 i = 0; i < entries; i = i + 1) {
+        FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(dir_buf + (i * 32));
+        if (dir->Name[0] == DIR_ENTRY_END || dir->Name[0] == DIR_ENTRY_FREE) {
+            memzero((PU8)dir, sizeof(FAT12_DIR_ENTRY));
+            memcpy(dir->Name, dir_name, 11);
+            dir->Attributes = 0x20; // Archive file attribute
+            dir->FirstClusterHigh = (U16)(first_cluster >> 16);
+            dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
+            dir->FileSize = size_bytes;
+
+            fat32_write_cluster(vol, dir_cluster, dir_buf);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
+    U32 first_cluster = fat32_alloc_cluster(vol);
+    if (first_cluster == 0) return 0;
+
+    U8 cluster_buf[4096];
+    memzero(cluster_buf, vol->bytes_per_cluster);
+    fat32_write_cluster(vol, first_cluster, cluster_buf);
+    fat32_set_fat_entry(vol, first_cluster, 0x0FFFFFFF);
+
+    U8 dir_name[11];
+    memset(dir_name, ' ', 11);
+    U32 ni = 0;
+    PU8 p = dirname;
+    while (*p != 0 && *p != '.' && ni < 8) {
+        dir_name[ni] = c_toupper(*p);
+        ni = ni + 1;
+        p = p + 1;
+    }
+
+    fat32_read_cluster(vol, dir_cluster, cluster_buf);
+    U32 entries = vol->bytes_per_cluster / 32;
+
+    for (U32 i = 0; i < entries; i = i + 1) {
+        FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+        if (dir->Name[0] == DIR_ENTRY_END || dir->Name[0] == DIR_ENTRY_FREE) {
+            memzero((PU8)dir, sizeof(FAT12_DIR_ENTRY));
+            memcpy(dir->Name, dir_name, 11);
+            dir->Attributes = 0x10;
+            dir->FirstClusterHigh = (U16)(first_cluster >> 16);
+            dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
+            dir->FileSize = 0;
+
+            fat32_write_cluster(vol, dir_cluster, cluster_buf);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+U8 fat32_remove_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name) {
+    U8 target_name[11];
+    memset(target_name, ' ', 11);
+    U32 ni = 0;
+    PU8 p = name;
+    while (*p != 0 && *p != '.' && ni < 8) {
+        target_name[ni] = c_toupper(*p);
+        ni = ni + 1;
+        p = p + 1;
+    }
+    if (*p == '.') {
+        p = p + 1;
+        U32 ei = 8;
+        while (*p != 0 && ei < 11) {
+            target_name[ei] = c_toupper(*p);
+            ei = ei + 1;
+            p = p + 1;
+        }
+    }
+
+    U8 cluster_buf[4096];
+    U32 curr_cluster = dir_cluster;
+
+    while (curr_cluster < FAT32_EOF && curr_cluster >= 2) {
+        fat32_read_cluster(vol, curr_cluster, cluster_buf);
+        U32 entries = vol->bytes_per_cluster / 32;
+
+        for (U32 i = 0; i < entries; i = i + 1) {
+            FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+            if (dir->Name[0] == DIR_ENTRY_END) return 0;
+            if (dir->Name[0] == DIR_ENTRY_FREE || dir->Attributes == FAT32_ATTR_LFN) continue;
+
+            if (memcmp(dir->Name, target_name, 11) == 0) {
+                U32 start_c = ((U32)dir->FirstClusterHigh << 16) | (U32)dir->FirstClusterLow;
+                while (start_c < FAT32_EOF && start_c >= 2) {
+                    U32 next_c = fat32_get_fat_entry(vol, start_c);
+                    fat32_set_fat_entry(vol, start_c, 0);
+                    start_c = next_c;
+                }
+
+                dir->Name[0] = DIR_ENTRY_FREE;
+                fat32_write_cluster(vol, curr_cluster, cluster_buf);
+                return 1;
+            }
+        }
+        curr_cluster = fat32_get_fat_entry(vol, curr_cluster);
+    }
+    return 0;
+}
+
+U0 fat32_format(U8 drive, U32 lba_start, U32 sector_count, PU8 label, PU8 vbr_code) {
+    U8 sector_buf[512];
+    memzero(sector_buf, 512);
+
+    if (vbr_code) {
+        memcpy(sector_buf, vbr_code, 512);
+    }
+
+    FAT32_EBPB *ebpb = (FAT32_EBPB *)sector_buf;
+    ebpb->bytes_per_sector = 512;
+    ebpb->sectors_per_cluster = 8;
+    ebpb->reserved_sectors = 32;
+    ebpb->num_fats = 2;
+    ebpb->media_type = 0xF8;
+    ebpb->sectors_per_track = 63;
+    ebpb->num_heads = 255;
+    ebpb->hidden_sectors = lba_start;
+    ebpb->total_sectors32 = sector_count;
+
+    // Sectors per FAT32 calculation
+    U32 fat_sectors = (sector_count / 8 / 128) + 1;
+    ebpb->sectors_per_fat32 = fat_sectors;
+    ebpb->root_cluster = 2;
+    ebpb->drive_number = 0x80;
+    ebpb->boot_signature = 0x29;
+    ebpb->volume_id = 0x12345678;
+    memset(ebpb->volume_label, ' ', 11);
+    if (label) {
+        U32 len = strlen(label);
+        if (len > 11) len = 11;
+        memcpy(ebpb->volume_label, label, len);
+    }
+    memcpy(ebpb->fs_type, "FAT32   ", 8);
+
+    // Write Sector 0 (VBR)
+    disk_write_sec(drive, lba_start, 1, sector_buf);
+
+    // Zero Reserved Sectors
+    memzero(sector_buf, 512);
+    for (U32 r = 1; r < 32; r = r + 1) {
+        disk_write_sec(drive, lba_start + r, 1, sector_buf);
+    }
+
+    // Initialize FAT1 & FAT2 Tables
+    U32 fat1_lba = lba_start + 32;
+    U32 fat2_lba = fat1_lba + fat_sectors;
+
+    // Cluster 0 & 1 reserved: 0x0FFFFFF8, 0x0FFFFFFF, Cluster 2 (Root): 0x0FFFFFFF
+    PU32 fat_sec = (PU32)sector_buf;
+    memzero(sector_buf, 512);
+    fat_sec[0] = 0x0FFFFFF8;
+    fat_sec[1] = 0x0FFFFFFF;
+    fat_sec[2] = 0x0FFFFFFF; // Root cluster EOF
+
+    disk_write_sec(drive, fat1_lba, 1, sector_buf);
+    disk_write_sec(drive, fat2_lba, 1, sector_buf);
+
+    // Clear remaining FAT sectors
+    memzero(sector_buf, 512);
+    for (U32 s = 1; s < fat_sectors; s = s + 1) {
+        disk_write_sec(drive, fat1_lba + s, 1, sector_buf);
+        disk_write_sec(drive, fat2_lba + s, 1, sector_buf);
+    }
+
+    // Zero Root Cluster (Cluster 2)
+    U32 data_lba = fat2_lba + fat_sectors;
+    for (U32 c = 0; c < 8; c = c + 1) {
+        disk_write_sec(drive, data_lba + c, 1, sector_buf);
+    }
+
+    dcomprintf("[FAT32] Formatted drive %d partition at LBA %d: Sectors=%d, FAT_Sectors=%d\n",
+               drive, lba_start, sector_count, fat_sectors);
+}
