@@ -20,12 +20,6 @@ typedef struct _MBR_PARTITION_ENTRY {
     U32 sector_count;
 } MBR_PARTITION_ENTRY;
 
-typedef struct _MBR_HEADER {
-    U8                  code[446];
-    MBR_PARTITION_ENTRY partitions[4];
-    U16                 boot_signature; // 0xAA55
-} MBR_HEADER;
-
 U0 mbr_parse(U8 drive, MBR_PARTITION_ENTRY *out_parts) {
     U8 sector_buf[512];
     memzero(sector_buf, 512);
@@ -36,15 +30,16 @@ U0 mbr_parse(U8 drive, MBR_PARTITION_ENTRY *out_parts) {
         ramdisk_read_sectors(0, 1, sector_buf);
     }
     dcomputs("[MBR] MBR sector read successfully.\n");
-    MBR_HEADER *hdr = (MBR_HEADER *)sector_buf;
-    if (hdr->boot_signature != 0xAA55) {
-        dcomputs("[MBR] Invalid boot signature (expected 0xAA55)");
+
+    U16 sig = (U16)sector_buf[510] | ((U16)sector_buf[511] << 8);
+    if (sig != 0xAA55) {
+        dcomprintf("[MBR] Invalid boot signature (0x%04X, expected 0xAA55)\n", sig);
         memzero((PU8)out_parts, sizeof(MBR_PARTITION_ENTRY) * 4);
         return;
     }
     dcomputs("[MBR] Valid boot signature found (0xAA55). Parsing partition entries...");
     for (U32 i = 0; i < 4; i = i + 1) {
-        memcpy((PU8)&out_parts[i], (PU8)&hdr->partitions[i], sizeof(MBR_PARTITION_ENTRY));
+        memcpy((PU8)&out_parts[i], sector_buf + 446 + (i * 16), sizeof(MBR_PARTITION_ENTRY));
     }
 }
 
@@ -73,14 +68,16 @@ U0 mbr_write_table(U8 drive, U32 part1_lba_start, U32 part1_sectors, PU8 mbr_boo
         memcpy(sector_buf, mbr_boot_code, 446);
     }
 
-    MBR_HEADER *hdr = (MBR_HEADER *)sector_buf;
-    hdr->boot_signature = 0xAA55;
+    // Partition 1: Active FAT32 (LBA) at offset 446
+    MBR_PARTITION_ENTRY *p1 = (MBR_PARTITION_ENTRY *)(sector_buf + 446);
+    p1->boot_indicator = 0x80; // Active
+    p1->partition_type = MBR_TYPE_FAT32_LBA;
+    p1->start_lba = part1_lba_start;
+    p1->sector_count = part1_sectors;
 
-    // Partition 1: Active FAT32 (LBA)
-    hdr->partitions[0].boot_indicator = 0x80; // Active
-    hdr->partitions[0].partition_type = MBR_TYPE_FAT32_LBA;
-    hdr->partitions[0].start_lba = part1_lba_start;
-    hdr->partitions[0].sector_count = part1_sectors;
+    // Boot signature at offset 510
+    sector_buf[510] = 0x55;
+    sector_buf[511] = 0xAA;
 
     if (drive == 0) {
         ata_write_sector(0, sector_buf);
