@@ -1,0 +1,91 @@
+/*
+Function table:
+  U0  mbr_parse(U8 drive, MBR_PARTITION_ENTRY *out_parts);
+  U32 mbr_find_fat32(U8 drive, MBR_PARTITION_ENTRY *out_part);
+  U0  mbr_write_table(U8 drive, U32 part1_lba_start, U32 part1_sectors, PU8 mbr_boot_code);
+*/
+
+#define MBR_TYPE_FAT12       0x01
+#define MBR_TYPE_FAT16_SMALL 0x04
+#define MBR_TYPE_FAT16       0x06
+#define MBR_TYPE_FAT32_CHS   0x0B
+#define MBR_TYPE_FAT32_LBA   0x0C
+
+typedef struct _MBR_PARTITION_ENTRY {
+    U8  boot_indicator;  // 0x80 = active/bootable, 0x00 = inactive
+    U8  start_chs[3];
+    U8  partition_type;
+    U8  end_chs[3];
+    U32 start_lba;
+    U32 sector_count;
+} MBR_PARTITION_ENTRY;
+
+typedef struct _MBR_HEADER {
+    U8                  code[446];
+    MBR_PARTITION_ENTRY partitions[4];
+    U16                 boot_signature; // 0xAA55
+} MBR_HEADER;
+
+U0 mbr_parse(U8 drive, MBR_PARTITION_ENTRY *out_parts) {
+    U8 sector_buf[512];
+    memzero(sector_buf, 512);
+    dcomprintf("[MBR] Parsing MBR partition table on drive %d...\n", drive);
+    if (drive == 0) {
+        ata_read_sector(0, sector_buf);
+    } else {
+        ramdisk_read_sectors(0, 1, sector_buf);
+    }
+    dcomputs("[MBR] MBR sector read successfully.\n");
+    MBR_HEADER *hdr = (MBR_HEADER *)sector_buf;
+    if (hdr->boot_signature != 0xAA55) {
+        dcomputs("[MBR] Invalid boot signature (expected 0xAA55)");
+        memzero((PU8)out_parts, sizeof(MBR_PARTITION_ENTRY) * 4);
+        return;
+    }
+    dcomputs("[MBR] Valid boot signature found (0xAA55). Parsing partition entries...");
+    for (U32 i = 0; i < 4; i = i + 1) {
+        memcpy((PU8)&out_parts[i], (PU8)&hdr->partitions[i], sizeof(MBR_PARTITION_ENTRY));
+    }
+}
+
+U32 mbr_find_fat32(U8 drive, MBR_PARTITION_ENTRY *out_part) {
+    MBR_PARTITION_ENTRY parts[4];
+    dcomputs("[MBR] Searching for FAT32 partition...");
+    mbr_parse(drive, parts);
+
+    dcomputs("[MBR] Partition table parsed. Checking for FAT32 partitions...");
+    for (U32 i = 0; i < 4; i = i + 1) {
+        U8 ptype = parts[i].partition_type;
+        if (ptype == MBR_TYPE_FAT32_CHS || ptype == MBR_TYPE_FAT32_LBA) {
+            dcomprintf("[MBR] Found FAT32 partition at index %d: LBA=%d, Sectors=%d\n", i, parts[i].start_lba, parts[i].sector_count);
+            memcpy((PU8)out_part, (PU8)&parts[i], sizeof(MBR_PARTITION_ENTRY));
+            return 1;
+        }
+    }
+    return 0; // Not found
+}
+
+U0 mbr_write_table(U8 drive, U32 part1_lba_start, U32 part1_sectors, PU8 mbr_boot_code) {
+    U8 sector_buf[512];
+    memzero(sector_buf, 512);
+
+    if (mbr_boot_code) {
+        memcpy(sector_buf, mbr_boot_code, 446);
+    }
+
+    MBR_HEADER *hdr = (MBR_HEADER *)sector_buf;
+    hdr->boot_signature = 0xAA55;
+
+    // Partition 1: Active FAT32 (LBA)
+    hdr->partitions[0].boot_indicator = 0x80; // Active
+    hdr->partitions[0].partition_type = MBR_TYPE_FAT32_LBA;
+    hdr->partitions[0].start_lba = part1_lba_start;
+    hdr->partitions[0].sector_count = part1_sectors;
+
+    if (drive == 0) {
+        ata_write_sector(0, sector_buf);
+    } else {
+        ramdisk_write_sectors(0, 1, sector_buf);
+    }
+    dcomprintf("[MBR] Partition table written to drive %d: LBA=%d, Sectors=%d\n", drive, part1_lba_start, part1_sectors);
+}

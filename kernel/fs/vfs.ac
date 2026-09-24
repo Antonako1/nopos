@@ -1,0 +1,394 @@
+/*
+Function table:
+  U0  vfs_init();
+  U8  vfs_mount(PU8 dev_name, PU8 mount_path, U8 fs_type);
+  U8  vfs_open(PU8 path, VFS_NODE *out_node);
+  U32 vfs_read(VFS_NODE *node, U32 offset, U32 size, PU8 buffer);
+  U32 vfs_write(VFS_NODE *node, PU8 data, U32 size);
+  U8  vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry);
+  U8  vfs_mkdir(PU8 path);
+  U8  vfs_touch(PU8 path);
+  U8  vfs_remove(PU8 path);
+  U0  vfs_list_drives();
+*/
+
+#define VFS_FS_FAT12 1
+#define VFS_FS_FAT32 2
+
+#define VFS_MAX_MOUNTS 8
+#define VFS_TYPE_FILE  1
+#define VFS_TYPE_DIR   2
+
+typedef struct _VFS_DIR_ENTRY {
+    U8  name[64];
+    U32 size;
+    U8  is_directory;
+} VFS_DIR_ENTRY;
+
+typedef struct _VFS_NODE {
+    U8  name[64];
+    U8  type; // VFS_TYPE_FILE or VFS_TYPE_DIR
+    U32 size;
+    U32 cluster;
+    U8  mount_id;
+    U8  fs_type;
+} VFS_NODE;
+
+typedef struct _T_VFS_MOUNT {
+    U8        used;
+    U8        dev_name[16];
+    U8        mount_path[32];
+    U8        fs_type;
+    U8        drive;
+    U32       lba_start;
+    FAT12_VOL fat12_vol;
+    FAT32_VOL fat32_vol;
+} T_VFS_MOUNT;
+
+T_VFS_MOUNT g_vfs_mounts[VFS_MAX_MOUNTS];
+
+U0 vfs_init() {
+    dcomputs("[VFS] Initializing Virtual File System...");
+    memzero((PU8)g_vfs_mounts, sizeof(T_VFS_MOUNT) * VFS_MAX_MOUNTS);
+    dcomputs("[VFS] Virtual File System initialized.");
+}
+
+U0 vfs_resolve_alias(PU8 path, PU8 out_resolved) {
+    if (strncmp(path, "A:", 2) == 0 || strncmp(path, "a:", 2) == 0) {
+        strcpy(out_resolved, "ram0:/");
+        PU8 rest = path + 2;
+        if (*rest == '/') rest = rest + 1;
+        strcat(out_resolved, rest);
+    } else if (strncmp(path, "C:", 2) == 0 || strncmp(path, "c:", 2) == 0) {
+        strcpy(out_resolved, "hd0p1:/");
+        PU8 rest = path + 2;
+        if (*rest == '/') rest = rest + 1;
+        strcat(out_resolved, rest);
+    } else {
+        strcpy(out_resolved, path);
+    }
+}
+
+U8 vfs_mount(PU8 dev_name, PU8 mount_path, U8 fs_type) {
+    for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+        if (g_vfs_mounts[i].used == 0) {
+            g_vfs_mounts[i].used = 1;
+            strcpy(g_vfs_mounts[i].dev_name, dev_name);
+            strcpy(g_vfs_mounts[i].mount_path, mount_path);
+            g_vfs_mounts[i].fs_type = fs_type;
+            dcomprintf("[VFS] Mounting device '%s' to '%s' with FS_Type=%d\n", dev_name, mount_path, fs_type);
+            if (strcmp(dev_name, "ram0") == 0) {
+                g_vfs_mounts[i].drive = 1;
+                g_vfs_mounts[i].lba_start = 0;
+                FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
+            } else if (strcmp(dev_name, "fd0") == 0) {
+                g_vfs_mounts[i].drive = 0;
+                g_vfs_mounts[i].lba_start = 0;
+                FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
+            } else if (strcmp(dev_name, "hd0p1") == 0) {
+                g_vfs_mounts[i].drive = 0;
+                MBR_PARTITION_ENTRY part;
+                if (mbr_find_fat32(0, &part)) {
+                    g_vfs_mounts[i].lba_start = part.start_lba;
+                } else {
+                    g_vfs_mounts[i].lba_start = 2048; // Fallback default
+                }
+                fat32_init(0, g_vfs_mounts[i].lba_start, &g_vfs_mounts[i].fat32_vol);
+            }
+
+            dcomprintf("[VFS] Mounted '%s' on '%s' (FS_Type=%d)\n", dev_name, mount_path, fs_type);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+local I32 vfs_find_mount(PU8 path) {
+    U8 resolved[128];
+    vfs_resolve_alias(path, resolved);
+
+    for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+        if (g_vfs_mounts[i].used) {
+            U32 mlen = strlen(g_vfs_mounts[i].mount_path);
+            if (strncmp(resolved, g_vfs_mounts[i].mount_path, mlen) == 0) {
+                return (I32)i;
+            }
+            if (strncmp(resolved, g_vfs_mounts[i].dev_name, strlen(g_vfs_mounts[i].dev_name)) == 0) {
+                return (I32)i;
+            }
+        }
+    }
+    return -1;
+}
+
+U8 vfs_open(PU8 path, VFS_NODE *out_node) {
+    U8 resolved[128];
+    vfs_resolve_alias(path, resolved);
+
+    I32 mid = vfs_find_mount(resolved);
+    if (mid < 0) {
+        return 0;
+    }
+
+    T_VFS_MOUNT *m = &g_vfs_mounts[mid];
+    out_node->mount_id = (U8)mid;
+    out_node->fs_type = m->fs_type;
+
+    // Strip mount prefix
+    PU8 rel_path = resolved;
+    if (strncmp(resolved, m->mount_path, strlen(m->mount_path)) == 0) {
+        rel_path = resolved + strlen(m->mount_path);
+    } else if (strncmp(resolved, m->dev_name, strlen(m->dev_name)) == 0) {
+        rel_path = resolved + strlen(m->dev_name);
+        if (*rel_path == ':') rel_path = rel_path + 1;
+    }
+    if (*rel_path == '/') rel_path = rel_path + 1;
+
+    strcpy(out_node->name, rel_path);
+
+    if (rel_path[0] == 0) {
+        out_node->type = VFS_TYPE_DIR;
+        out_node->size = 0;
+        out_node->cluster = (m->fs_type == VFS_FS_FAT32) ? m->fat32_vol.root_cluster : 0;
+        return 1;
+    }
+
+    if (m->fs_type == VFS_FS_FAT12) {
+        FAT12_DIR_ENTRY entry;
+        if (FAT12_FIND_FILE(&m->fat12_vol, rel_path, &entry)) {
+            out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+            out_node->size = entry.FileSize;
+            out_node->cluster = (U32)entry.FirstClusterLow;
+            return 1;
+        }
+    } else if (m->fs_type == VFS_FS_FAT32) {
+        FAT12_DIR_ENTRY entry;
+        if (fat32_find_entry(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path, &entry)) {
+            out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+            out_node->size = entry.FileSize;
+            out_node->cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+U32 vfs_read(VFS_NODE *node, U32 offset, U32 size, PU8 buffer) {
+    if (node->mount_id >= VFS_MAX_MOUNTS) {
+        return 0;
+    }
+    T_VFS_MOUNT *m = &g_vfs_mounts[node->mount_id];
+
+    if (m->fs_type == VFS_FS_FAT12) {
+        FAT12_DIR_ENTRY entry;
+        entry.FirstClusterLow = (U16)node->cluster;
+        entry.FileSize = node->size;
+        FAT12_READ_FILE(&m->fat12_vol, &entry, buffer);
+        return node->size;
+    } else if (m->fs_type == VFS_FS_FAT32) {
+        FAT12_DIR_ENTRY entry;
+        entry.FirstClusterHigh = (U16)(node->cluster >> 16);
+        entry.FirstClusterLow = (U16)(node->cluster & 0xFFFF);
+        entry.FileSize = node->size;
+        fat32_read_file(&m->fat32_vol, &entry, buffer);
+        return node->size;
+    }
+    return 0;
+}
+
+U32 vfs_write(VFS_NODE *node, PU8 data, U32 size) {
+    if (node->mount_id >= VFS_MAX_MOUNTS) {
+        return 0;
+    }
+    T_VFS_MOUNT *m = &g_vfs_mounts[node->mount_id];
+
+    if (m->fs_type == VFS_FS_FAT32) {
+        fat32_create_file(&m->fat32_vol, m->fat32_vol.root_cluster, node->name, data, size);
+        return size;
+    }
+    return 0;
+}
+
+U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
+    if (dir_node->mount_id >= VFS_MAX_MOUNTS) {
+        return 0;
+    }
+    T_VFS_MOUNT *m = &g_vfs_mounts[dir_node->mount_id];
+
+    if (m->fs_type == VFS_FS_FAT12) {
+        FAT12_VOL *vol = &m->fat12_vol;
+        U8 buffer[512];
+        U32 match_count = 0;
+
+        for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
+            fat12_read_sectors_mem(vol, vol->root_dir_lba + i, 1, buffer);
+            FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buffer;
+
+            for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+                if (entry[j].Name[0] == DIR_ENTRY_END) {
+                    return 0;
+                }
+                if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+                    continue;
+                }
+                if (match_count == index) {
+                    U32 p = 0;
+                    for (U32 k = 0; k < 8; k = k + 1) {
+                        if (entry[j].Name[k] != ' ') {
+                            out_entry->name[p] = entry[j].Name[k];
+                            p = p + 1;
+                        }
+                    }
+                    if (entry[j].Name[8] != ' ') {
+                        out_entry->name[p] = '.';
+                        p = p + 1;
+                        for (U32 k = 8; k < 11; k = k + 1) {
+                            if (entry[j].Name[k] != ' ') {
+                                out_entry->name[p] = entry[j].Name[k];
+                                p = p + 1;
+                            }
+                        }
+                    }
+                    out_entry->name[p] = 0;
+                    out_entry->size = entry[j].FileSize;
+                    out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
+                    return 1;
+                }
+                match_count = match_count + 1;
+            }
+        }
+        return 0;
+    } else if (m->fs_type == VFS_FS_FAT32) {
+        U8 cluster_buf[4096];
+        fat32_read_cluster(&m->fat32_vol, m->fat32_vol.root_cluster, cluster_buf);
+        U32 entries = m->fat32_vol.bytes_per_cluster / 32;
+
+        U32 match_count = 0;
+        for (U32 i = 0; i < entries; i = i + 1) {
+            FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+            if (dir->Name[0] == DIR_ENTRY_END) {
+                return 0;
+            }
+            if (dir->Name[0] == DIR_ENTRY_FREE || dir->Attributes == FAT32_ATTR_LFN) {
+                continue;
+            }
+            if (match_count == index) {
+                U32 p = 0;
+                for (U32 k = 0; k < 8; k = k + 1) {
+                    if (dir->Name[k] != ' ') {
+                        out_entry->name[p] = dir->Name[k];
+                        p = p + 1;
+                    }
+                }
+                if (dir->Name[8] != ' ') {
+                    out_entry->name[p] = '.';
+                    p = p + 1;
+                    for (U32 k = 8; k < 11; k = k + 1) {
+                        if (dir->Name[k] != ' ') {
+                            out_entry->name[p] = dir->Name[k];
+                            p = p + 1;
+                        }
+                    }
+                }
+                out_entry->name[p] = 0;
+                out_entry->size = dir->FileSize;
+                out_entry->is_directory = (dir->Attributes & 0x10) ? 1 : 0;
+                return 1;
+            }
+            match_count = match_count + 1;
+        }
+    }
+    return 0;
+}
+
+U8 vfs_mkdir(PU8 path) {
+    U8 resolved[128];
+    vfs_resolve_alias(path, resolved);
+
+    I32 mid = vfs_find_mount(resolved);
+    if (mid < 0) return 0;
+
+    T_VFS_MOUNT *m = &g_vfs_mounts[mid];
+    if (m->fs_type == VFS_FS_FAT12) {
+        shell_puts((PU8)"Error: RAMDisk (A:/) is read-only.\n");
+        return 0;
+    }
+
+    PU8 rel_path = resolved;
+    if (strncmp(resolved, m->mount_path, strlen(m->mount_path)) == 0) {
+        rel_path = resolved + strlen(m->mount_path);
+    } else if (strncmp(resolved, m->dev_name, strlen(m->dev_name)) == 0) {
+        rel_path = resolved + strlen(m->dev_name);
+        if (*rel_path == ':') rel_path = rel_path + 1;
+    }
+    if (*rel_path == '/') rel_path = rel_path + 1;
+
+    return fat32_mkdir(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path);
+}
+
+U8 vfs_touch(PU8 path) {
+    U8 resolved[128];
+    vfs_resolve_alias(path, resolved);
+
+    I32 mid = vfs_find_mount(resolved);
+    if (mid < 0) return 0;
+
+    T_VFS_MOUNT *m = &g_vfs_mounts[mid];
+    if (m->fs_type == VFS_FS_FAT12) {
+        shell_puts((PU8)"Error: RAMDisk (A:/) is read-only.\n");
+        return 0;
+    }
+
+    PU8 rel_path = resolved;
+    if (strncmp(resolved, m->mount_path, strlen(m->mount_path)) == 0) {
+        rel_path = resolved + strlen(m->mount_path);
+    } else if (strncmp(resolved, m->dev_name, strlen(m->dev_name)) == 0) {
+        rel_path = resolved + strlen(m->dev_name);
+        if (*rel_path == ':') rel_path = rel_path + 1;
+    }
+    if (*rel_path == '/') rel_path = rel_path + 1;
+
+    return fat32_create_file(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path, (PU8)"", 0);
+}
+
+U8 vfs_remove(PU8 path) {
+    U8 resolved[128];
+    vfs_resolve_alias(path, resolved);
+
+    I32 mid = vfs_find_mount(resolved);
+    if (mid < 0) return 0;
+
+    T_VFS_MOUNT *m = &g_vfs_mounts[mid];
+    if (m->fs_type == VFS_FS_FAT12) {
+        shell_puts((PU8)"Error: RAMDisk (A:/) is read-only.\n");
+        return 0;
+    }
+
+    PU8 rel_path = resolved;
+    if (strncmp(resolved, m->mount_path, strlen(m->mount_path)) == 0) {
+        rel_path = resolved + strlen(m->mount_path);
+    } else if (strncmp(resolved, m->dev_name, strlen(m->dev_name)) == 0) {
+        rel_path = resolved + strlen(m->dev_name);
+        if (*rel_path == ':') rel_path = rel_path + 1;
+    }
+    if (*rel_path == '/') rel_path = rel_path + 1;
+
+    return fat32_remove_entry(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path);
+}
+
+U0 vfs_list_drives() {
+    shell_puts((PU8)"=== Block Devices & Filesystem Mounts ===\n");
+    shell_printf("  Device: %s  Type: %s  FS: %s  MountPoint: %s\n", "ram0", "RAMDisk", "FAT12", "A:/");
+    shell_printf("  Device: %s  Type: %s  FS: %s  MountPoint: %s\n", "hd0", "ATA HDD", "MBR", "/hd0");
+
+    for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+        if (g_vfs_mounts[i].used) {
+            PU8 fs_str = (PU8)"Unknown";
+            if (g_vfs_mounts[i].fs_type == VFS_FS_FAT12) fs_str = (PU8)"FAT12";
+            if (g_vfs_mounts[i].fs_type == VFS_FS_FAT32) fs_str = (PU8)"FAT32";
+
+            shell_printf("  Device: %s  Type: %s  FS: %s  MountPoint: %s\n",
+                       g_vfs_mounts[i].dev_name, "Partition", fs_str, g_vfs_mounts[i].mount_path);
+        }
+    }
+}
