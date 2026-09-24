@@ -43,3 +43,7 @@ U32 ramdisk_write_sectors(U32 lba, U32 count, PU8 buffer) {
 U32 ramdisk_get_sector_count() {
     return g_ramdisk_sectors;
 }
+
+U8 ramdisk_is_present() {
+    return (g_ramdisk_base != NULLPTR && g_ramdisk_sectors > 0) ? 1 : 0;
+}
