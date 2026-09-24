@@ -132,7 +132,7 @@ U0 ps2_init() {
     // misc
     g_kbd_map[0x39] = ' ';
     g_kbd_map[0x1C] = '\n';
-    g_kbd_map[0x0E] = '\b';
+    g_kbd_map[0x0E] = 0x08;   // Backspace (ASCII 8)
     g_kbd_map[0x0F] = '\t';
 
     // ── Shifted map (only for keys whose meaning changes with shift) ──
