@@ -70,27 +70,61 @@ typedef struct _FAT12_VOL {
 FAT12_VOL g_fat12_volume;
 
 void FAT12_INIT(FAT12_VOL *vol, PU8 ram_base) {
-  vol->ram_base = ram_base;
-  if (!ram_base) {
+  if (!vol || !ram_base) {
     return;
   }
 
-  // Parse BPB directly from RAM image Sector 0
-  memcpy((PU8)&vol->bpb, ram_base, sizeof(FAT12_BPB));
+  vol->ram_base = ram_base;
+
+#ifdef FAT12_RETRIEVE_DATA
+  // Unaligned byte-offset extraction from FAT12 Sector 0 BPB
+  U16 bytes_per_sec   = (U16)ram_base[11] | ((U16)ram_base[12] << 8);
+  U8  sec_per_cluster = ram_base[13];
+  U16 res_sec         = (U16)ram_base[14] | ((U16)ram_base[15] << 8);
+  U8  num_fats        = ram_base[16];
+  U16 root_entries    = (U16)ram_base[17] | ((U16)ram_base[18] << 8);
+  U16 sec_per_fat     = (U16)ram_base[22] | ((U16)ram_base[23] << 8);
+
+  // Validate BPB values; fallback to standard 1.44MB FAT12 floppy geometry if 0 or corrupted
+  if (bytes_per_sec == 0 || bytes_per_sec > 4096) bytes_per_sec = 512;
+  if (sec_per_cluster == 0) sec_per_cluster = 1;
+  if (res_sec == 0) res_sec = 1;
+  if (num_fats == 0) num_fats = 2;
+  if (root_entries == 0) root_entries = 224;
+  if (sec_per_fat == 0) sec_per_fat = 9;
+
+  vol->bpb.BytesPerSector = bytes_per_sec;
+  vol->bpb.SectorsPerCluster = sec_per_cluster;
+  vol->bpb.ReservedSectors = res_sec;
+  vol->bpb.NumberOfFATs = num_fats;
+  vol->bpb.RootDirEntries = root_entries;
+  vol->bpb.SectorsPerFAT = sec_per_fat;
 
   // Calculate sector boundaries based on BPB parameters
-  vol->fat_lba = vol->bpb.ReservedSectors;
-  vol->root_dir_sectors = (vol->bpb.RootDirEntries * 32 + vol->bpb.BytesPerSector - 1) / vol->bpb.BytesPerSector;
-  vol->root_dir_lba = vol->fat_lba + (vol->bpb.NumberOfFATs * vol->bpb.SectorsPerFAT);
+  vol->fat_lba = res_sec;
+  vol->root_dir_sectors = (root_entries * 32 + bytes_per_sec - 1) / bytes_per_sec;
+  vol->root_dir_lba = vol->fat_lba + (num_fats * sec_per_fat);
   vol->data_lba = vol->root_dir_lba + vol->root_dir_sectors;
-  vol->bytes_per_cluster = vol->bpb.BytesPerSector * vol->bpb.SectorsPerCluster;
+  vol->bytes_per_cluster = bytes_per_sec * sec_per_cluster;
+#else
+  // Standard 1.44MB FAT12 floppy geometry pasted directly from BOOTL.AS
+  vol->bpb.BytesPerSector    = 512;
+  vol->bpb.SectorsPerCluster = 1;
+  vol->bpb.ReservedSectors   = 1;
+  vol->bpb.NumberOfFATs      = 2;
+  vol->bpb.RootDirEntries    = 224;
+  vol->bpb.SectorsPerFAT     = 9;
 
-  // Cache File Allocation Table directly from RAM
+  vol->fat_lba              = 1;
+  vol->root_dir_sectors     = 14;
+  vol->root_dir_lba         = 19;
+  vol->data_lba             = 33;
+  vol->bytes_per_cluster    = 512;
+#endif
+
+  // Cache File Allocation Table directly from RAM image
   U32 fat_offset = vol->fat_lba * vol->bpb.BytesPerSector;
   memcpy(vol->fat_buffer, ram_base + fat_offset, vol->bpb.SectorsPerFAT * vol->bpb.BytesPerSector);
-
-  dcomprintf("[FAT12] In-Memory Volume Initialized: Base=0x%08X, RootLBA=%d, DataLBA=%d\n",
-             ram_base, vol->root_dir_lba, vol->data_lba);
 }
 
 // Unpack a 12-bit entry from the File Allocation Table
@@ -121,12 +155,56 @@ PU8 FAT12_GET_FILE_PTR(FAT12_VOL *vol, FAT12_DIR_ENTRY *entry) {
 }
 
 U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
-  if (!vol->ram_base) return 0;
-  
+  if (!vol || !vol->ram_base || !filename || !out_entry) {
+    return 0;
+  }
+
+  /*
+   * Convert normal filename:
+   *   KERNEL.BIN -> KERNEL  BIN
+   */
+  U8 target[11];
+  for (U32 k = 0; k < 11; k = k + 1) {
+    target[k] = ' ';
+  }
+
+  U32 pos = 0;
+  U32 name_pos = 0;
+  U32 ext_pos = 0;
+
+  while (filename[pos] != 0 && filename[pos] != '.') {
+    if (name_pos >= 8) {
+      return 0;
+    }
+    U8 c = filename[pos];
+    if (c >= 'a' && c <= 'z') {
+      c = c - 'a' + 'A';
+    }
+    target[name_pos] = c;
+    name_pos = name_pos + 1;
+    pos = pos + 1;
+  }
+
+  if (filename[pos] == '.') {
+    pos = pos + 1;
+    while (filename[pos] != 0) {
+      if (ext_pos >= 3) {
+        return 0;
+      }
+      U8 c = filename[pos];
+      if (c >= 'a' && c <= 'z') {
+        c = c - 'a' + 'A';
+      }
+      target[8 + ext_pos] = c;
+      ext_pos = ext_pos + 1;
+      pos = pos + 1;
+    }
+  }
+
   for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
     PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
     FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
-    
+
     for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
       if (entry[j].Name[0] == DIR_ENTRY_END) {
         return 0;
@@ -134,21 +212,25 @@ U8 FAT12_FIND_FILE(FAT12_VOL *vol, PU8 filename, FAT12_DIR_ENTRY *out_entry) {
       if (entry[j].Name[0] == DIR_ENTRY_FREE) {
         continue;
       }
-      
+      if ((entry[j].Attributes & 0x0F) == 0x0F) {
+        continue;
+      }
+
       U8 match = 1;
       for (U32 k = 0; k < 11; k = k + 1) {
-        if (entry[j].Name[k] != filename[k]) {
+        if (entry[j].Name[k] != target[k]) {
           match = 0;
           break;
         }
       }
-      
+
       if (match) {
         *out_entry = entry[j];
         return 1;
       }
     }
   }
+
   return 0;
 }
 
