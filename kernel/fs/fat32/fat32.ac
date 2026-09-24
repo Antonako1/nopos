@@ -161,23 +161,7 @@ U8 fat32_find_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name, FAT12_DIR_ENTRY *
     U32 curr_cluster = dir_cluster;
 
     U8 target_name[11];
-    memset(target_name, ' ', 11);
-    U32 ni = 0;
-    PU8 p = name;
-    while (*p != 0 && *p != '.' && ni < 8) {
-        target_name[ni] = c_toupper(*p);
-        ni = ni + 1;
-        p = p + 1;
-    }
-    if (*p == '.') {
-        p = p + 1;
-        U32 ei = 8;
-        while (*p != 0 && ei < 11) {
-            target_name[ei] = c_toupper(*p);
-            ei = ei + 1;
-            p = p + 1;
-        }
-    }
+    fat_to_83_name(name, target_name);
 
     while (curr_cluster < FAT32_EOF && curr_cluster >= 2) {
         fat32_read_cluster(vol, curr_cluster, cluster_buf);
@@ -257,23 +241,7 @@ U8 fat32_create_file(FAT32_VOL *vol, U32 dir_cluster, PU8 filename, PU8 data, U3
 
     // Format 8.3 Directory Name
     U8 dir_name[11];
-    memset(dir_name, ' ', 11);
-    U32 ni = 0;
-    PU8 p = filename;
-    while (*p != 0 && *p != '.' && ni < 8) {
-        dir_name[ni] = c_toupper(*p);
-        ni = ni + 1;
-        p = p + 1;
-    }
-    if (*p == '.') {
-        p = p + 1;
-        U32 ei = 8;
-        while (*p != 0 && ei < 11) {
-            dir_name[ei] = c_toupper(*p);
-            ei = ei + 1;
-            p = p + 1;
-        }
-    }
+    fat_to_83_name(filename, dir_name);
 
     // Insert Directory Entry into dir_cluster
     U8 dir_buf[4096];
@@ -303,18 +271,33 @@ U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
 
     U8 cluster_buf[4096];
     memzero(cluster_buf, vol->bytes_per_cluster);
+
+    // Initialize '.' entry (Entry 0)
+    FAT12_DIR_ENTRY *dot = (FAT12_DIR_ENTRY *)cluster_buf;
+    memset(dot->Name, ' ', 11);
+    dot->Name[0] = '.';
+    dot->Attributes = 0x10;
+    dot->FirstClusterHigh = (U16)(first_cluster >> 16);
+    dot->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
+    dot->FileSize = 0;
+
+    // Initialize '..' entry (Entry 1)
+    FAT12_DIR_ENTRY *dotdot = (FAT12_DIR_ENTRY *)(cluster_buf + 32);
+    memset(dotdot->Name, ' ', 11);
+    dotdot->Name[0] = '.';
+    dotdot->Name[1] = '.';
+    dotdot->Attributes = 0x10;
+    U32 parent_cluster = (dir_cluster == vol->root_cluster) ? 0 : dir_cluster;
+    dotdot->FirstClusterHigh = (U16)(parent_cluster >> 16);
+    dotdot->FirstClusterLow = (U16)(parent_cluster & 0xFFFF);
+    dotdot->FileSize = 0;
+
     fat32_write_cluster(vol, first_cluster, cluster_buf);
     fat32_set_fat_entry(vol, first_cluster, 0x0FFFFFFF);
 
+    // Insert Directory Entry into dir_cluster
     U8 dir_name[11];
-    memset(dir_name, ' ', 11);
-    U32 ni = 0;
-    PU8 p = dirname;
-    while (*p != 0 && *p != '.' && ni < 8) {
-        dir_name[ni] = c_toupper(*p);
-        ni = ni + 1;
-        p = p + 1;
-    }
+    fat_to_83_name(dirname, dir_name);
 
     fat32_read_cluster(vol, dir_cluster, cluster_buf);
     U32 entries = vol->bytes_per_cluster / 32;
@@ -338,23 +321,7 @@ U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
 
 U8 fat32_remove_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name) {
     U8 target_name[11];
-    memset(target_name, ' ', 11);
-    U32 ni = 0;
-    PU8 p = name;
-    while (*p != 0 && *p != '.' && ni < 8) {
-        target_name[ni] = c_toupper(*p);
-        ni = ni + 1;
-        p = p + 1;
-    }
-    if (*p == '.') {
-        p = p + 1;
-        U32 ei = 8;
-        while (*p != 0 && ei < 11) {
-            target_name[ei] = c_toupper(*p);
-            ei = ei + 1;
-            p = p + 1;
-        }
-    }
+    fat_to_83_name(name, target_name);
 
     U8 cluster_buf[4096];
     U32 curr_cluster = dir_cluster;
