@@ -1,5 +1,5 @@
 #include "kernel.ah"
-
+#include "BUILDNUM.AH"
 U0 _start(KERNEL_TABLE *kt) {
     asm { CLI }
 
@@ -20,7 +20,7 @@ U0 _start(KERNEL_TABLE *kt) {
     dcom_yl_on();
     dcom_rl_on();
     dcom_gl_on();
-    dcomprintf("nopos starting %d, %x, %d", 10, 0xFF, -11);
+    dcomprintf("nopos starting, build number %d, %x, %d", BUILDNUM, 0xFF, -11);
 
     // Memory Management Initialization
     e820_dump(gkt->e820entries, gkt->e820cnt);
@@ -32,10 +32,33 @@ U0 _start(KERNEL_TABLE *kt) {
     panic_if(heap_init(0) == FALSE, "Failed to initialize heap", PANIC_KERNEL, 0);
     dcomprintf("[MM] Heap initialized successfully.");
 
-    // ATA & FAT12 Storage Initialization
-    // ata_init();
-    // FAT12_INIT(&g_fat12_volume);
-    dcomprintf("[FS] FAT12 Storage initialized successfully.");
+    // Storage & VFS Initialization
+    ata_init();
+    dcomputs("[ATA] ATA Controller initialized successfully.");
+    vfs_init();
+    dcomputs("[VFS] Virtual File System initialized successfully.");
+
+    dcomprintf("[BOOT] BootDrive=0x%02X, BootType=%d, RAMBase=0x%08X, RAMSize=%d\n",
+               gkt->boot_drive, gkt->boot_type, gkt->ramdisk_base, gkt->ramdisk_size);
+
+    if (gkt->boot_type == 1 && gkt->ramdisk_base != 0) {
+        PU8 base = (PU8)gkt->ramdisk_base;
+        U32 size = gkt->ramdisk_size;
+        ramdisk_init(base, size);
+        vfs_mount("ram0", "A:/", VFS_FS_FAT12);
+        dcomputs("[FS] Mounted FAT12 RAMDisk to A:/");
+        strcpy(g_sh_cwd, "A:/");
+    }
+
+    MBR_PARTITION_ENTRY fat32_part;
+    if (mbr_find_fat32(0, &fat32_part)) {
+        dcomprintf("[FS] Found FAT32 partition on hd0: LBA=%d, Sectors=%d\n", fat32_part.start_lba, fat32_part.sector_count);
+        vfs_mount("hd0p1", "C:/", VFS_FS_FAT32);
+        if (gkt->boot_type != 1) {
+            strcpy(g_sh_cwd, "C:/");
+        }
+    }
+    dcomputs("[FS] VFS Storage & Mounts initialized successfully.");
 
     asm { STI }
 
