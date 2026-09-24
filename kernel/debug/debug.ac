@@ -28,6 +28,7 @@ U0 dcomprintf(PU8 fmt, ...) {
     va_start(args, fmt);
     vformat((VOIDPTR)dcom_putch, NULLPTR, fmt, args);
     va_end(args);
+    dcomputs(0); // null terminator
 }
 
 U0 dcom_rl_on(){ serial_wdata(SERIAL_PORT2, "!R1", 4); }
