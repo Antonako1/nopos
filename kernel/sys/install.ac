@@ -34,7 +34,7 @@ U0 dump_sector(PU8 drive_name, U32 lba) {
     }
 }
 
-U0 install_copy_tree(PU8 src_path, PU8 dst_path) {
+U0 install_copy_tree(PU8 src_path, PU8 dst_path, U8 quiet) {
     VFS_NODE dir_node;
     if (!vfs_open(src_path, &dir_node)) {
         return;
@@ -68,8 +68,10 @@ U0 install_copy_tree(PU8 src_path, PU8 dst_path) {
 
         if (entry.is_directory) {
             vfs_mkdir(sub_dst);
-            shell_printf("  --> [DIR]  %s\n", sub_dst);
-            install_copy_tree(sub_src, sub_dst);
+            if (!quiet) {
+                shell_printf("  --> [DIR]  %s\n", sub_dst);
+            }
+            install_copy_tree(sub_src, sub_dst, quiet);
         } else {
             if (stricmp(entry.name, "STAGE2.BIN") == 0 || stricmp(entry.name, "KERNEL.BIN") == 0) {
                 continue;
@@ -103,7 +105,9 @@ U0 install_copy_tree(PU8 src_path, PU8 dst_path) {
                     strcpy(dst_node.name, rel);
 
                     vfs_write(&dst_node, buf, file_node.size);
-                    shell_printf("  --> [FILE] %-20s (%u bytes)\n", sub_dst, file_node.size);
+                    if (!quiet) {
+                        shell_printf("  --> [FILE] %-20s (%u bytes)\n", sub_dst, file_node.size);
+                    }
                 }
 
                 if (buf != NULLPTR) {
@@ -153,7 +157,7 @@ U0 sys_install(PU8 src_dev, PU8 dst_dev) {
 
     // 3. Mount FAT32 partition to VFS
     shell_puts((PU8)"[INSTALL] [3/4] Mounting FAT32 partition hd0p1 to VFS...\n");
-    vfs_mount("hd0p1", "/hd0p1", VFS_FS_FAT32);
+    vfs_mount("hd0p1", "C:/", VFS_FS_FAT32);
 
     // 4. Transfer Core Payload Files from RAMDisk to FAT32 Hard Disk
     shell_puts((PU8)"[INSTALL] [4/4] Copying System Payload Files to hd0p1:/ ...\n");
@@ -206,13 +210,18 @@ U0 sys_install(PU8 src_dev, PU8 dst_dev) {
 
     // Interactive Prompt: Copy all remaining files recursively
     g_sh_fg_color = LIGHT_CYAN;
-    shell_puts((PU8)"\nCopy all remaining files from A:/ to C:/ recursively? (y/n): ");
+    shell_puts((PU8)"\nCopy all remaining files from A:/ to C:/ recursively? (quiet/yes/no) (q/y/n): ");
     g_sh_fg_color = WHITE;
 
     U8 choice = 0;
     while (1) {
         while (!ps2_key_ready()) {}
         U8 k = ps2_getc();
+        if (k == 'q' || k == 'Q') {
+            choice = 'q';
+            shell_puts((PU8)"q\n");
+            break;
+        }
         if (k == 'y' || k == 'Y') {
             choice = 'y';
             shell_puts((PU8)"y\n");
@@ -224,10 +233,13 @@ U0 sys_install(PU8 src_dev, PU8 dst_dev) {
             break;
         }
     }
-
+    
     if (choice == 'y') {
         shell_puts((PU8)"[INSTALL] Recursively copying payload files from A:/ to C:/ ...\n");
-        install_copy_tree((PU8)"A:/", (PU8)"C:/");
+        install_copy_tree((PU8)"A:/", (PU8)"C:/", 0);
+    } else if (choice == 'q') {
+        shell_puts((PU8)"[INSTALL] Quiet mode enabled.\n");
+        install_copy_tree((PU8)"A:/", (PU8)"C:/", 1);
     }
 
     strcpy(g_sh_cwd, "C:/");
