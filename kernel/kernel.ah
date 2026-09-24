@@ -7,6 +7,10 @@
 #include "./drivers/com/com.ac"
 #include "./debug/debug.ac"
 
+U0 shell_putc(U8 c);
+U0 shell_puts(PU8 s);
+U0 shell_printf(PU8 fmt, ...);
+
 #include "./drivers/cmos/pit.ac"
 #include "./drivers/cmos/cmos.ac"
 #include "./drivers/svga/svga.ac"
@@ -27,16 +31,27 @@ typedef struct _KERNEL_TABLE {
     E820_ENTRY e820entries[E820_MAX_ENTRIES];
     U32 e820cnt;
     VESA_INFO vesa_info;
-    VBE_MODE_INFO vbe_mode_info;    
+    VBE_MODE_INFO vbe_mode_info;
+    U32 boot_drive;
+    U32 boot_type;
+    U32 ramdisk_base;
+    U32 ramdisk_size;
 } KERNEL_TABLE;
 
 KERNEL_TABLE *gkt;
 
 #include "./mm/bitmap/bitmap.ac"
-#include "./mm/paging/pageframe.ac"
+#include "./mm/paging/pf.ac"
 #include "./mm/paging/paging.ac"
 #include "./mm/heap/heap.ac"
 
+#include "./drivers/ramdisk/ramdisk.ac"
+
 #include "./fs/fat12/fat12.ac"
+#include "./fs/mbr.ac"
+#include "./fs/fat32/fat32.ac"
+#include "./fs/vfs.ac"
+
+#include "./sys/install.ac"
 
 #include "../shell/shell.ac"
