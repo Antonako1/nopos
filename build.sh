@@ -40,22 +40,27 @@ mkdir -p "$OUT_DIR"
 # AstraC.exe is a Windows binary: it does not understand WSL /mnt/c paths, so
 # translate every file argument to its Windows form (C:\...) before calling it.
 BOOTLOADER_WIN="$(wslpath -w "$BOOT_DIR/BOOTLOADER.AS")"
+BOOT_MBR_WIN="$(wslpath -w "$BOOT_DIR/BOOT_MBR.AS")"
+FAT32_VBR_WIN="$(wslpath -w "$BOOT_DIR/FAT32_VBR.AS")"
 SECOND_STAGE_WIN="$(wslpath -w "$BOOT_DIR/SECOND_STAGE.AS")"
 KERNEL_WIN="$(wslpath -w "$KERNEL_DIR/kernel.ac")"
 
-echo "==> [1/4] Assemble bootloader"
+echo "==> [1/5] Assemble floppy bootloader"
 "$ASTRAC" asm "$BOOTLOADER_WIN" bits 16 org 7C00 arch i286 warn 2
-echo "Build flag: $?"
 
-echo "==> [2/4] Assemble second stage"
+echo "==> [2/5] Assemble HDD MBR & FAT32 VBR bootloaders"
+"$ASTRAC" asm "$BOOT_MBR_WIN" bits 16 org 7C00 arch i386 warn 2
+"$ASTRAC" asm "$FAT32_VBR_WIN" bits 16 org 7C00 arch i386 warn 2
+
+echo "==> [3/5] Assemble second stage"
 "$ASTRAC" asm "$SECOND_STAGE_WIN" bits 16 org 7E00 warn 2
-echo "Build flag: $?"
 
-echo "==> [3/4] Compile kernel"
+echo "==> [4/5] Compile kernel"
 "$ASTRAC" comp "$KERNEL_WIN" bits 32 org 10000 entry _start warn 2 debug #verbose
-echo "Build flag: $?"
 
-echo "==> [4/4] Create FAT12 floppy image"
+echo "==> [5/5] Create FAT12 floppy image & Hard Disk image"
+HDD_IMG="$OUT_DIR/os_disk.img"
+dd if=/dev/zero of="$HDD_IMG" bs=1M count=32 status=none
 
 FLOPPY="$OUT_DIR/floppy.img"
 
