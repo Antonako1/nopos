@@ -74,37 +74,50 @@ U0 vfs_resolve_alias(PU8 path, PU8 out_resolved) {
 }
 
 U8 vfs_mount(PU8 dev_name, PU8 mount_path, U8 fs_type) {
+    I32 slot = -1;
     for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
-        if (g_vfs_mounts[i].used == 0) {
-            g_vfs_mounts[i].used = 1;
-            strcpy(g_vfs_mounts[i].dev_name, dev_name);
-            strcpy(g_vfs_mounts[i].mount_path, mount_path);
-            g_vfs_mounts[i].fs_type = fs_type;
-            dcomprintf("[VFS] Mounting device '%s' to '%s' with FS_Type=%d\n", dev_name, mount_path, fs_type);
-            if (strcmp(dev_name, "ram0") == 0) {
-                g_vfs_mounts[i].drive = 1;
-                g_vfs_mounts[i].lba_start = 0;
-                FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
-            } else if (strcmp(dev_name, "fd0") == 0) {
-                g_vfs_mounts[i].drive = 0;
-                g_vfs_mounts[i].lba_start = 0;
-                FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
-            } else if (strcmp(dev_name, "hd0p1") == 0) {
-                g_vfs_mounts[i].drive = 0;
-                MBR_PARTITION_ENTRY part;
-                if (mbr_find_fat32(0, &part)) {
-                    g_vfs_mounts[i].lba_start = part.start_lba;
-                } else {
-                    g_vfs_mounts[i].lba_start = 2048; // Fallback default
-                }
-                fat32_init(0, g_vfs_mounts[i].lba_start, &g_vfs_mounts[i].fat32_vol);
-            }
-
-            dcomprintf("[VFS] Mounted '%s' on '%s' (FS_Type=%d)\n", dev_name, mount_path, fs_type);
-            return 1;
+        if (g_vfs_mounts[i].used && strcmp(g_vfs_mounts[i].dev_name, dev_name) == 0) {
+            slot = (I32)i;
+            break;
         }
     }
-    return 0;
+    if (slot < 0) {
+        for (U32 i = 0; i < VFS_MAX_MOUNTS; i = i + 1) {
+            if (g_vfs_mounts[i].used == 0) {
+                slot = (I32)i;
+                break;
+            }
+        }
+    }
+    if (slot < 0) return 0;
+
+    U32 i = (U32)slot;
+    g_vfs_mounts[i].used = 1;
+    strcpy(g_vfs_mounts[i].dev_name, dev_name);
+    strcpy(g_vfs_mounts[i].mount_path, mount_path);
+    g_vfs_mounts[i].fs_type = fs_type;
+    dcomprintf("[VFS] Mounting device '%s' to '%s' with FS_Type=%d\n", dev_name, mount_path, fs_type);
+    if (strcmp(dev_name, "ram0") == 0) {
+        g_vfs_mounts[i].drive = 1;
+        g_vfs_mounts[i].lba_start = 0;
+        FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
+    } else if (strcmp(dev_name, "fd0") == 0) {
+        g_vfs_mounts[i].drive = 0;
+        g_vfs_mounts[i].lba_start = 0;
+        FAT12_INIT(&g_vfs_mounts[i].fat12_vol, g_ramdisk_base);
+    } else if (strcmp(dev_name, "hd0p1") == 0) {
+        g_vfs_mounts[i].drive = 0;
+        MBR_PARTITION_ENTRY part;
+        if (mbr_find_fat32(0, &part)) {
+            g_vfs_mounts[i].lba_start = part.start_lba;
+        } else {
+            g_vfs_mounts[i].lba_start = 2048; // Fallback default
+        }
+        fat32_init(0, g_vfs_mounts[i].lba_start, &g_vfs_mounts[i].fat32_vol);
+    }
+
+    dcomprintf("[VFS] Mounted '%s' on '%s' (FS_Type=%d)\n", dev_name, mount_path, fs_type);
+    return 1;
 }
 
 I32 vfs_find_mount(PU8 path) {
@@ -145,11 +158,18 @@ U8 vfs_open(PU8 path, VFS_NODE *out_node) {
         rel_path = resolved + strlen(m->dev_name);
         if (*rel_path == ':') rel_path = rel_path + 1;
     }
-    if (*rel_path == '/') rel_path = rel_path + 1;
+    while (*rel_path == '/') rel_path = rel_path + 1;
 
     strcpy(out_node->name, rel_path);
 
-    if (rel_path[0] == 0) {
+    // Strip trailing slashes
+    U32 nlen = strlen(out_node->name);
+    while (nlen > 0 && out_node->name[nlen - 1] == '/') {
+        out_node->name[nlen - 1] = 0;
+        nlen = nlen - 1;
+    }
+
+    if (nlen == 0) {
         out_node->type = VFS_TYPE_DIR;
         out_node->size = 0;
         out_node->cluster = (m->fs_type == VFS_FS_FAT32) ? m->fat32_vol.root_cluster : 0;
@@ -157,23 +177,106 @@ U8 vfs_open(PU8 path, VFS_NODE *out_node) {
     }
 
     if (m->fs_type == VFS_FS_FAT12) {
-        FAT12_DIR_ENTRY entry;
-        if (FAT12_FIND_FILE(&m->fat12_vol, rel_path, &entry)) {
-            out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-            out_node->size = entry.FileSize;
-            out_node->cluster = (U32)entry.FirstClusterLow;
-            dcomprintf("[VFS] File node initialized: '%s'\n", out_node->name);
-            return 1;
+        U32 curr_cluster = 0;
+        U8 path_copy[128];
+        strcpy(path_copy, out_node->name);
+
+        PU8 p = path_copy;
+        U8 node_type = VFS_TYPE_DIR;
+        U32 node_size = 0;
+
+        while (*p != 0) {
+            while (*p == '/') p = p + 1;
+            if (*p == 0) break;
+
+            PU8 slash = strchr(p, '/');
+            U8 comp[32];
+            if (slash != NULLPTR) {
+                U32 clen = (U32)(slash - p);
+                if (clen >= 32) clen = 31;
+                strncpy(comp, p, clen);
+                comp[clen] = 0;
+                p = slash + 1;
+            } else {
+                strncpy(comp, p, 31);
+                comp[31] = 0;
+                p = p + strlen(p);
+            }
+
+            FAT12_DIR_ENTRY entry;
+            if (!fat12_find_entry(&m->fat12_vol, curr_cluster, comp, &entry)) {
+                return 0;
+            }
+
+            if (entry.Attributes & 0x10) {
+                curr_cluster = (U32)entry.FirstClusterLow;
+                node_type = VFS_TYPE_DIR;
+                node_size = 0;
+            } else {
+                while (*p == '/') p = p + 1;
+                if (*p != 0) return 0;
+                curr_cluster = (U32)entry.FirstClusterLow;
+                node_type = VFS_TYPE_FILE;
+                node_size = entry.FileSize;
+            }
         }
+
+        out_node->type = node_type;
+        out_node->size = node_size;
+        out_node->cluster = curr_cluster;
+        return 1;
     } else if (m->fs_type == VFS_FS_FAT32) {
-        FAT12_DIR_ENTRY entry;
-        if (fat32_find_entry(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path, &entry)) {
-            out_node->type = (entry.Attributes & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
-            out_node->size = entry.FileSize;
-            out_node->cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
-            dcomprintf("[VFS] File node initialized: '%s'\n", out_node->name);
-            return 1;
+        U32 curr_cluster = m->fat32_vol.root_cluster;
+        U8 path_copy[128];
+        strcpy(path_copy, out_node->name);
+
+        PU8 p = path_copy;
+        U8 node_type = VFS_TYPE_DIR;
+        U32 node_size = 0;
+
+        while (*p != 0) {
+            while (*p == '/') p = p + 1;
+            if (*p == 0) break;
+
+            PU8 slash = strchr(p, '/');
+            U8 comp[32];
+            if (slash != NULLPTR) {
+                U32 clen = (U32)(slash - p);
+                if (clen >= 32) clen = 31;
+                strncpy(comp, p, clen);
+                comp[clen] = 0;
+                p = slash + 1;
+            } else {
+                strncpy(comp, p, 31);
+                comp[31] = 0;
+                p = p + strlen(p);
+            }
+
+            FAT12_DIR_ENTRY entry;
+            if (!fat32_find_entry(&m->fat32_vol, curr_cluster, comp, &entry)) {
+                return 0;
+            }
+
+            if (entry.Attributes & 0x10) {
+                curr_cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+                if (curr_cluster == 0) {
+                    curr_cluster = m->fat32_vol.root_cluster;
+                }
+                node_type = VFS_TYPE_DIR;
+                node_size = 0;
+            } else {
+                while (*p == '/') p = p + 1;
+                if (*p != 0) return 0;
+                curr_cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+                node_type = VFS_TYPE_FILE;
+                node_size = entry.FileSize;
+            }
         }
+
+        out_node->type = node_type;
+        out_node->size = node_size;
+        out_node->cluster = curr_cluster;
+        return 1;
     }
     return 0;
 }
@@ -236,6 +339,9 @@ local U32 vfs_get_parent_dir_cluster(FAT32_VOL *vol, PU8 path, PU8 out_filename)
         if (fat32_find_entry(vol, curr_cluster, component, &entry)) {
             if (entry.Attributes & 0x10) {
                 curr_cluster = ((U32)entry.FirstClusterHigh << 16) | (U32)entry.FirstClusterLow;
+                if (curr_cluster == 0) {
+                    curr_cluster = vol->root_cluster;
+                }
             } else {
                 return 0;
             }
@@ -272,86 +378,135 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
 
     if (m->fs_type == VFS_FS_FAT12) {
         FAT12_VOL *vol = &m->fat12_vol;
-        U8 buffer[512];
         U32 match_count = 0;
 
-        for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
-            PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
-            FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
+        if (dir_node->cluster == 0) {
+            for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
+                PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
+                FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
 
-            for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
-                if (entry[j].Name[0] == DIR_ENTRY_END) {
-                    return 0;
-                }
-                if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
-                    continue;
-                }
-                if (match_count == index) {
-                    U32 p = 0;
-                    for (U32 k = 0; k < 8; k = k + 1) {
-                        if (entry[j].Name[k] != ' ') {
-                            out_entry->name[p] = entry[j].Name[k];
-                            p = p + 1;
-                        }
+                for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+                    if (entry[j].Name[0] == DIR_ENTRY_END) {
+                        return 0;
                     }
-                    if (entry[j].Name[8] != ' ') {
-                        out_entry->name[p] = '.';
-                        p = p + 1;
-                        for (U32 k = 8; k < 11; k = k + 1) {
+                    if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+                        continue;
+                    }
+                    if (match_count == index) {
+                        U32 p = 0;
+                        for (U32 k = 0; k < 8; k = k + 1) {
                             if (entry[j].Name[k] != ' ') {
                                 out_entry->name[p] = entry[j].Name[k];
                                 p = p + 1;
                             }
                         }
+                        if (entry[j].Name[8] != ' ') {
+                            out_entry->name[p] = '.';
+                            p = p + 1;
+                            for (U32 k = 8; k < 11; k = k + 1) {
+                                if (entry[j].Name[k] != ' ') {
+                                    out_entry->name[p] = entry[j].Name[k];
+                                    p = p + 1;
+                                }
+                            }
+                        }
+                        out_entry->name[p] = 0;
+                        out_entry->size = entry[j].FileSize;
+                        out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
+                        return 1;
                     }
-                    out_entry->name[p] = 0;
-                    out_entry->size = entry[j].FileSize;
-                    out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
-                    return 1;
+                    match_count = match_count + 1;
                 }
-                match_count = match_count + 1;
             }
+            return 0;
+        } else {
+            U16 cluster = (U16)dir_node->cluster;
+            U8 buf[512];
+            while (cluster >= 0x002 && cluster < FAT12_EOF) {
+                FAT12_READ_CLUSTER(vol, cluster, buf);
+                FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buf;
+                for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+                    if (entry[j].Name[0] == DIR_ENTRY_END) {
+                        return 0;
+                    }
+                    if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+                        continue;
+                    }
+                    if (match_count == index) {
+                        U32 p = 0;
+                        for (U32 k = 0; k < 8; k = k + 1) {
+                            if (entry[j].Name[k] != ' ') {
+                                out_entry->name[p] = entry[j].Name[k];
+                                p = p + 1;
+                            }
+                        }
+                        if (entry[j].Name[8] != ' ') {
+                            out_entry->name[p] = '.';
+                            p = p + 1;
+                            for (U32 k = 8; k < 11; k = k + 1) {
+                                if (entry[j].Name[k] != ' ') {
+                                    out_entry->name[p] = entry[j].Name[k];
+                                    p = p + 1;
+                                }
+                            }
+                        }
+                        out_entry->name[p] = 0;
+                        out_entry->size = entry[j].FileSize;
+                        out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
+                        return 1;
+                    }
+                    match_count = match_count + 1;
+                }
+                cluster = FAT12_GET_FAT_ENTRY(vol, cluster);
+            }
+            return 0;
         }
-        return 0;
     } else if (m->fs_type == VFS_FS_FAT32) {
         U8 cluster_buf[4096];
         U32 target_cluster = (dir_node->cluster != 0) ? dir_node->cluster : m->fat32_vol.root_cluster;
-        fat32_read_cluster(&m->fat32_vol, target_cluster, cluster_buf);
-        U32 entries = m->fat32_vol.bytes_per_cluster / 32;
-
         U32 match_count = 0;
-        for (U32 i = 0; i < entries; i = i + 1) {
-            FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
-            if (dir->Name[0] == DIR_ENTRY_END) {
-                return 0;
-            }
-            if (dir->Name[0] == DIR_ENTRY_FREE || dir->Attributes == FAT32_ATTR_LFN) {
-                continue;
-            }
-            if (match_count == index) {
-                U32 p = 0;
-                for (U32 k = 0; k < 8; k = k + 1) {
-                    if (dir->Name[k] != ' ') {
-                        out_entry->name[p] = dir->Name[k];
-                        p = p + 1;
-                    }
+
+        while (target_cluster >= 2 && target_cluster < FAT32_EOF) {
+            fat32_read_cluster(&m->fat32_vol, target_cluster, cluster_buf);
+            U32 entries = m->fat32_vol.bytes_per_cluster / 32;
+
+            for (U32 i = 0; i < entries; i = i + 1) {
+                FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+                if (dir->Name[0] == DIR_ENTRY_END) {
+                    return 0;
                 }
-                if (dir->Name[8] != ' ') {
-                    out_entry->name[p] = '.';
-                    p = p + 1;
-                    for (U32 k = 8; k < 11; k = k + 1) {
+                if (dir->Name[0] == DIR_ENTRY_FREE || (dir->Attributes & 0x0F) == FAT32_ATTR_LFN || ((dir->Attributes & 0x08) && !(dir->Attributes & 0x10))) {
+                    continue;
+                }
+                if (dir->Name[0] < 0x20 && dir->Name[0] != 0x05) {
+                    continue;
+                }
+                if (match_count == index) {
+                    U32 p = 0;
+                    for (U32 k = 0; k < 8; k = k + 1) {
                         if (dir->Name[k] != ' ') {
                             out_entry->name[p] = dir->Name[k];
                             p = p + 1;
                         }
                     }
+                    if (dir->Name[8] != ' ') {
+                        out_entry->name[p] = '.';
+                        p = p + 1;
+                        for (U32 k = 8; k < 11; k = k + 1) {
+                            if (dir->Name[k] != ' ') {
+                                out_entry->name[p] = dir->Name[k];
+                                p = p + 1;
+                            }
+                        }
+                    }
+                    out_entry->name[p] = 0;
+                    out_entry->size = dir->FileSize;
+                    out_entry->is_directory = (dir->Attributes & 0x10) ? 1 : 0;
+                    return 1;
                 }
-                out_entry->name[p] = 0;
-                out_entry->size = dir->FileSize;
-                out_entry->is_directory = (dir->Attributes & 0x10) ? 1 : 0;
-                return 1;
+                match_count = match_count + 1;
             }
-            match_count = match_count + 1;
+            target_cluster = fat32_get_fat_entry(&m->fat32_vol, target_cluster);
         }
     }
     return 0;
@@ -435,9 +590,13 @@ U8 vfs_remove(PU8 path) {
         rel_path = resolved + strlen(m->dev_name);
         if (*rel_path == ':') rel_path = rel_path + 1;
     }
-    if (*rel_path == '/') rel_path = rel_path + 1;
+    while (*rel_path == '/') rel_path = rel_path + 1;
 
-    return fat32_remove_entry(&m->fat32_vol, m->fat32_vol.root_cluster, rel_path);
+    U8 filename[64];
+    U32 dir_cluster = vfs_get_parent_dir_cluster(&m->fat32_vol, rel_path, filename);
+    if (dir_cluster == 0) return 0;
+
+    return fat32_remove_entry(&m->fat32_vol, dir_cluster, filename);
 }
 
 U0 vfs_list_drives() {
