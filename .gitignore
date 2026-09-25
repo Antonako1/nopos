@@ -11,3 +11,5 @@ pxe/www
 pxe/dnsmasq.conf
 agents.md
 kernel/mm/MM.md
+
+l2_*.txt
