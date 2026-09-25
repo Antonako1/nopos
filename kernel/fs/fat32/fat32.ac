@@ -139,11 +139,63 @@ U32 fat32_alloc_cluster(FAT32_VOL *vol) {
         }
         PU32 entry_ptr = (PU32)(sector_buf + offset);
         if ((*entry_ptr & 0x0FFFFFFF) == 0) {
+            *entry_ptr = (*entry_ptr & 0xF0000000) | 0x0FFFFFFF;
             fat32_set_fat_entry(vol, c, 0x0FFFFFFF); // Mark EOF
             return c;
         }
     }
     return 0; // Disk full
+}
+
+local U8 fat32_insert_dir_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 dir_name, U8 attr, U32 first_cluster, U32 size_bytes) {
+    U8 dir_buf[4096];
+    U32 curr_cluster = dir_cluster;
+    U32 last_cluster = dir_cluster;
+
+    while (curr_cluster < FAT32_EOF && curr_cluster >= 2) {
+        fat32_read_cluster(vol, curr_cluster, dir_buf);
+        U32 entries = vol->bytes_per_cluster / 32;
+
+        U32 i = 0;
+        while (i < entries) {
+            FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(dir_buf + (i * 32));
+            if (dir->Name[0] == DIR_ENTRY_END || dir->Name[0] == DIR_ENTRY_FREE) {
+                memzero((PU8)dir, sizeof(FAT12_DIR_ENTRY));
+                memcpy(dir->Name, dir_name, 11);
+                dir->Attributes = attr;
+                dir->FirstClusterHigh = (U16)(first_cluster >> 16);
+                dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
+                dir->FileSize = size_bytes;
+
+                fat32_write_cluster(vol, curr_cluster, dir_buf);
+                return 1;
+            }
+            i = i + 1;
+        }
+
+        last_cluster = curr_cluster;
+        curr_cluster = fat32_get_fat_entry(vol, curr_cluster);
+    }
+
+    // Existing directory clusters are full: allocate new cluster for directory expansion
+    U32 new_dir_cluster = fat32_alloc_cluster(vol);
+    if (new_dir_cluster == 0) {
+        return 0; // Disk full
+    }
+
+    memzero(dir_buf, vol->bytes_per_cluster);
+    FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)dir_buf;
+    memcpy(dir->Name, dir_name, 11);
+    dir->Attributes = attr;
+    dir->FirstClusterHigh = (U16)(first_cluster >> 16);
+    dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
+    dir->FileSize = size_bytes;
+
+    fat32_write_cluster(vol, new_dir_cluster, dir_buf);
+    fat32_set_fat_entry(vol, last_cluster, new_dir_cluster);
+    fat32_set_fat_entry(vol, new_dir_cluster, 0x0FFFFFFF);
+
+    return 1;
 }
 
 U0 fat32_read_cluster(FAT32_VOL *vol, U32 cluster, PU8 buffer) {
@@ -167,8 +219,10 @@ U8 fat32_find_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name, FAT12_DIR_ENTRY *
         fat32_read_cluster(vol, curr_cluster, cluster_buf);
         U32 entries = vol->bytes_per_cluster / 32;
 
-        for (U32 i = 0; i < entries; i = i + 1) {
+        U32 i = 0;
+        while (i < entries) {
             FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+            i = i + 1;
             if (dir->Name[0] == DIR_ENTRY_END) {
                 return 0;
             }
@@ -243,26 +297,7 @@ U8 fat32_create_file(FAT32_VOL *vol, U32 dir_cluster, PU8 filename, PU8 data, U3
     U8 dir_name[11];
     fat_to_83_name(filename, dir_name);
 
-    // Insert Directory Entry into dir_cluster
-    U8 dir_buf[4096];
-    fat32_read_cluster(vol, dir_cluster, dir_buf);
-    U32 entries = vol->bytes_per_cluster / 32;
-
-    for (U32 i = 0; i < entries; i = i + 1) {
-        FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(dir_buf + (i * 32));
-        if (dir->Name[0] == DIR_ENTRY_END || dir->Name[0] == DIR_ENTRY_FREE) {
-            memzero((PU8)dir, sizeof(FAT12_DIR_ENTRY));
-            memcpy(dir->Name, dir_name, 11);
-            dir->Attributes = 0x20; // Archive file attribute
-            dir->FirstClusterHigh = (U16)(first_cluster >> 16);
-            dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
-            dir->FileSize = size_bytes;
-
-            fat32_write_cluster(vol, dir_cluster, dir_buf);
-            return 1;
-        }
-    }
-    return 0;
+    return fat32_insert_dir_entry(vol, dir_cluster, dir_name, 0x20, first_cluster, size_bytes);
 }
 
 U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
@@ -287,7 +322,10 @@ U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
     dotdot->Name[0] = '.';
     dotdot->Name[1] = '.';
     dotdot->Attributes = 0x10;
-    U32 parent_cluster = (dir_cluster == vol->root_cluster) ? 0 : dir_cluster;
+    U32 parent_cluster = dir_cluster;
+    if (dir_cluster == vol->root_cluster) {
+        parent_cluster = 0;
+    }
     dotdot->FirstClusterHigh = (U16)(parent_cluster >> 16);
     dotdot->FirstClusterLow = (U16)(parent_cluster & 0xFFFF);
     dotdot->FileSize = 0;
@@ -299,24 +337,7 @@ U8 fat32_mkdir(FAT32_VOL *vol, U32 dir_cluster, PU8 dirname) {
     U8 dir_name[11];
     fat_to_83_name(dirname, dir_name);
 
-    fat32_read_cluster(vol, dir_cluster, cluster_buf);
-    U32 entries = vol->bytes_per_cluster / 32;
-
-    for (U32 i = 0; i < entries; i = i + 1) {
-        FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
-        if (dir->Name[0] == DIR_ENTRY_END || dir->Name[0] == DIR_ENTRY_FREE) {
-            memzero((PU8)dir, sizeof(FAT12_DIR_ENTRY));
-            memcpy(dir->Name, dir_name, 11);
-            dir->Attributes = 0x10;
-            dir->FirstClusterHigh = (U16)(first_cluster >> 16);
-            dir->FirstClusterLow = (U16)(first_cluster & 0xFFFF);
-            dir->FileSize = 0;
-
-            fat32_write_cluster(vol, dir_cluster, cluster_buf);
-            return 1;
-        }
-    }
-    return 0;
+    return fat32_insert_dir_entry(vol, dir_cluster, dir_name, 0x10, first_cluster, 0);
 }
 
 U8 fat32_remove_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name) {
@@ -330,8 +351,10 @@ U8 fat32_remove_entry(FAT32_VOL *vol, U32 dir_cluster, PU8 name) {
         fat32_read_cluster(vol, curr_cluster, cluster_buf);
         U32 entries = vol->bytes_per_cluster / 32;
 
-        for (U32 i = 0; i < entries; i = i + 1) {
+        U32 i = 0;
+        while (i < entries) {
             FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+            i = i + 1;
             if (dir->Name[0] == DIR_ENTRY_END) return 0;
             if (dir->Name[0] == DIR_ENTRY_FREE || dir->Attributes == FAT32_ATTR_LFN) continue;
 

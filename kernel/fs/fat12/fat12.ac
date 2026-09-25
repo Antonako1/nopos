@@ -198,19 +198,18 @@ U8 fat12_find_entry(FAT12_VOL *vol, U32 dir_cluster, PU8 filename, FAT12_DIR_ENT
     for (U32 i = 0; i < vol->root_dir_sectors; i = i + 1) {
       PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
       FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
-
-      for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+      U32 j = 0;
+      while (j < (vol->bpb.BytesPerSector / 32)) {
         if (entry[j].Name[0] == DIR_ENTRY_END) {
           return 0;
         }
-        if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
-          continue;
+        if (entry[j].Name[0] != DIR_ENTRY_FREE && !(entry[j].Attributes & 0x08)) {
+          if (memcmp(entry[j].Name, target, 11) == 0) {
+            *out_entry = entry[j];
+            return 1;
+          }
         }
-
-        if (memcmp(entry[j].Name, target, 11) == 0) {
-          *out_entry = entry[j];
-          return 1;
-        }
+        j = j + 1;
       }
     }
     return 0;
@@ -220,18 +219,18 @@ U8 fat12_find_entry(FAT12_VOL *vol, U32 dir_cluster, PU8 filename, FAT12_DIR_ENT
     while (cluster >= 0x002 && cluster < FAT12_EOF) {
       FAT12_READ_CLUSTER(vol, cluster, buf);
       FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buf;
-      for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
+      U32 j = 0;
+      while (j < (vol->bpb.BytesPerSector / 32)) {
         if (entry[j].Name[0] == DIR_ENTRY_END) {
           return 0;
         }
-        if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
-          continue;
+        if (entry[j].Name[0] != DIR_ENTRY_FREE && !(entry[j].Attributes & 0x08)) {
+          if (memcmp(entry[j].Name, target, 11) == 0) {
+            *out_entry = entry[j];
+            return 1;
+          }
         }
-
-        if (memcmp(entry[j].Name, target, 11) == 0) {
-          *out_entry = entry[j];
-          return 1;
-        }
+        j = j + 1;
       }
       cluster = FAT12_GET_FAT_ENTRY(vol, cluster);
     }
