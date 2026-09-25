@@ -574,11 +574,96 @@ U0 shell_cmd_install(PU8 args) {
     sys_install((PU8)"ram0", (PU8)"hd0");
 }
 
+U0 shell_cmd_ifconfig() {
+    if (!g_e100_dev.initialized) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Network Interface: Not Initialized (No Intel PRO/100 NIC detected).\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+
+    g_sh_fg_color = LIGHT_CYAN;
+    shell_puts((PU8)"=== Ethernet Interface Statistics (eth0) ===\n");
+    g_sh_fg_color = WHITE;
+
+    U8 mac_str[18];
+    mac_to_str(g_e100_dev.mac, mac_str);
+
+    shell_printf("  HW Address:  %s\n", mac_str);
+    shell_printf("  PCI Bus/Dev: %02X:%02X.%d (Vendor: 0x%04X, Dev: 0x%04X)\n",
+                 g_e100_dev.pci_dev.bus, g_e100_dev.pci_dev.slot, g_e100_dev.pci_dev.func,
+                 g_e100_dev.pci_dev.header.vendor_id, g_e100_dev.pci_dev.header.device_id);
+    shell_printf("  I/O Port:    0x%04X\n", g_e100_dev.io_base);
+    shell_printf("  IRQ Line:    %d\n", g_e100_dev.pci_dev.header.interrupt_line);
+    shell_printf("  TX Packets:  %u (%u bytes)\n", g_e100_dev.tx_packets, g_e100_dev.tx_bytes);
+    shell_printf("  RX Packets:  %u (%u bytes)\n", g_e100_dev.rx_packets, g_e100_dev.rx_bytes);
+    shell_printf("  L2 Dump:     %s\n", g_l2_dump_enabled ? "ENABLED" : "DISABLED");
+}
+
+U0 shell_cmd_ethsend(PU8 args) {
+    args = str_trim(args);
+    if (strlen(args) == 0) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: ethsend <dst_mac> <ethertype_hex> <payload>\n");
+        shell_puts((PU8)"Example: ethsend ff:ff:ff:ff:ff:ff 0806 \"hello network\"\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+
+    PU8 space1 = strchr(args, ' ');
+    if (space1 == NULLPTR) {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"Usage: ethsend <dst_mac> <ethertype_hex> <payload>\n");
+        g_sh_fg_color = WHITE;
+        return;
+    }
+    *space1 = 0;
+    PU8 mac_str = str_trim(args);
+
+    PU8 rest = space1 + 1;
+    PU8 space2 = strchr(rest, ' ');
+    PU8 type_str = rest;
+    PU8 payload = (PU8)"";
+
+    if (space2 != NULLPTR) {
+        *space2 = 0;
+        payload = space2 + 1;
+    }
+
+    U8 dst_mac[6];
+    str_to_mac(mac_str, dst_mac);
+    U16 ethertype = (U16)atou_hex(type_str);
+
+    if (net_l2_send(dst_mac, ethertype, payload, strlen(payload))) {
+        g_sh_fg_color = LIGHT_GREEN;
+        shell_printf("[L2 TX] Packet sent (%d bytes payload, Type: 0x%04X)\n", strlen(payload), ethertype);
+        g_sh_fg_color = WHITE;
+    } else {
+        g_sh_fg_color = LIGHT_RED;
+        shell_puts((PU8)"[L2 TX] ERROR: Failed to transmit Ethernet packet.\n");
+        g_sh_fg_color = WHITE;
+    }
+}
+
+U0 shell_cmd_ethdump(PU8 args) {
+    (VOID)args;
+    if (g_l2_dump_enabled) {
+        g_l2_dump_enabled = 0;
+        shell_puts((PU8)"Layer 2 packet dumping DISABLED.\n");
+    } else {
+        g_l2_dump_enabled = 1;
+        shell_puts((PU8)"Layer 2 packet dumping ENABLED.\n");
+    }
+}
+
 U0 shell_cmd_help() {
     g_sh_fg_color = LIGHT_CYAN;
     shell_puts((PU8)"NopOS Shell Command Reference:\n");
     g_sh_fg_color = WHITE;
     shell_puts((PU8)"  help / ?                - Display this command reference\n");
+    shell_puts((PU8)"  ifconfig / netstat      - Display Ethernet NIC status & packet statistics\n");
+    shell_puts((PU8)"  ethsend <mac> <type> <msg> - Send raw Layer 2 Ethernet frame\n");
+    shell_puts((PU8)"  ethdump                 - Toggle real-time L2 packet dump logging\n");
     shell_puts((PU8)"  drives                  - List all block storage devices and mounts\n");
     shell_puts((PU8)"  cd / chdir <path|drive> - Change active drive or directory (e.g. cd C:, cd A:)\n");
     shell_puts((PU8)"  dir / ls [path]         - List directory files\n");
@@ -618,6 +703,12 @@ U0 shell_exec(PU8 line) {
 
     if (stricmp(cmd, (PU8)"help") == 0 || strcmp(cmd, (PU8)"?") == 0) {
         shell_cmd_help();
+    } else if (stricmp(cmd, (PU8)"ifconfig") == 0 || stricmp(cmd, (PU8)"netstat") == 0) {
+        shell_cmd_ifconfig();
+    } else if (stricmp(cmd, (PU8)"ethsend") == 0) {
+        shell_cmd_ethsend(args);
+    } else if (stricmp(cmd, (PU8)"ethdump") == 0) {
+        shell_cmd_ethdump(args);
     } else if (stricmp(cmd, (PU8)"drives") == 0 || stricmp(cmd, (PU8)"lsdev") == 0) {
         shell_cmd_drives();
     } else if (stricmp(cmd, (PU8)"install") == 0) {
@@ -691,6 +782,8 @@ U0 SHELL_INIT() {
     g_sh_fg_color = WHITE;
     shell_puts((PU8)"Type 'help' to view available system commands.\n\n");
 
+    net_l2_init();
+
     shell_print_prompt();
 }
 
@@ -702,7 +795,10 @@ U0 SHELL_RUN() {
     U32 len = 0;
 
     while (1) {
-        while (!ps2_key_ready()) {}
+        while (!ps2_key_ready()) {
+            net_l2_poll();
+            io_wait();
+        }
         U8 key = ps2_getc();
         U8 mods = ps2_get_mods();
         if (key == 0) continue;
