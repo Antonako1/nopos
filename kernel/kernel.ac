@@ -60,6 +60,8 @@ U0 _start(KERNEL_TABLE *kt) {
     }
     dcomputs("[FS] VFS Storage & Mounts initialized successfully.");
 
+    pci_initialize();
+    dcomputs("[PCI] PCI Bus initialized successfully.");
     asm { STI }
 
     dcom_rl_off();
