@@ -6,26 +6,40 @@
  * emitted on its own line immediately before the string instruction.
  */
 
-// Fill sz bytes at dest with the byte value val.
+// Fill sz bytes at dest with the byte value val (dword-wise for speed, then tail).
 PU8 memset(PU8 dest, U8 val, U32 sz) {
     asm {
         CLD
         MOV EDI, dest
         MOV AL, val
+        MOV AH, AL
+        MOV CX, AX
+        SHL EAX, 16
+        MOV AX, CX
         MOV ECX, sz
+        SHR ECX, 2
+        REP
+        STOSD
+        MOV ECX, sz
+        AND ECX, 3
         REP
         STOSB
     }
     return dest;
 }
 
-// Copy sz bytes from src to dest.
+// Copy sz bytes from src to dest (dword-wise for speed, then tail).
 PU8 memcpy(PU8 dest, PU8 src, U32 sz) {
     asm {
         CLD
         MOV ESI, src
         MOV EDI, dest
         MOV ECX, sz
+        SHR ECX, 2
+        REP
+        MOVSD
+        MOV ECX, sz
+        AND ECX, 3
         REP
         MOVSB
     }
@@ -70,15 +84,32 @@ PU8 memmove(PU8 dest, PU8 src, U32 sz) {
         return dest;
     }
     if (dest < src) {
-        U32 i = 0;
-        while (i < sz) {
-            *(dest + i) = *(src + i);
-            i = i + 1;
+        asm {
+            CLD
+            MOV ESI, src
+            MOV EDI, dest
+            MOV ECX, sz
+            SHR ECX, 2
+            REP
+            MOVSD
+            MOV ECX, sz
+            AND ECX, 3
+            REP
+            MOVSB
         }
     } else {
-        while (sz > 0) {
-            sz = sz - 1;
-            *(dest + sz) = *(src + sz);
+        asm {
+            STD
+            MOV ESI, src
+            ADD ESI, sz
+            DEC ESI
+            MOV EDI, dest
+            ADD EDI, sz
+            DEC EDI
+            MOV ECX, sz
+            REP
+            MOVSB
+            CLD
         }
     }
     return dest;
