@@ -12,7 +12,7 @@
 #define null 0
 #endif
 
-#define DEFAULT_HEAP_PAGES 1024 // 4M pages
+#define DEFAULT_HEAP_PAGES 2048 // 8Mb
 
 #define KHEAP_BLOCK_MAGIC0 0xDEADBEEF
 #define KHEAP_BLOCK_MAGIC1 0xFEEBDAED
@@ -251,6 +251,37 @@ VOIDPTR krealloc(VOIDPTR ptr, U32 new_size) {
     kfree(ptr);
 
     return new_ptr;
+}
+
+VOIDPTR kmalloc_aligned(U32 size, U32 alignment) {
+    dcomprintf("[HEAP] kmalloc_aligned: Requesting %d bytes with alignment %d", size, alignment);
+    if (!heap.initialized || size == 0 || alignment == 0) return NULL;
+    if (alignment < 4) alignment = 4;
+    dcomprintf("[HEAP] kmalloc_aligned: Adjusted alignment to %d bytes", alignment);
+
+    U32 total_bytes = size + alignment - 1 + sizeof(VOIDPTR);
+    dcomprintf("[HEAP] kmalloc_aligned: Total bytes to allocate (including alignment overhead): %d", total_bytes);
+    PU8 raw_ptr = kmalloc(total_bytes);
+    dcomprintf("[HEAP] kmalloc_aligned: Raw pointer allocated at 0x%08X", (U32)raw_ptr);
+    if (raw_ptr == NULL) return NULL;
+    
+    U32 raw_addr = (U32)raw_ptr + sizeof(VOIDPTR);
+    dcomprintf("[HEAP] kmalloc_aligned: Raw address after reserving space for original pointer: 0x%08X", raw_addr);
+    U32 aligned_addr = (raw_addr + (alignment - 1)) & ~(alignment - 1);
+    dcomprintf("[HEAP] kmalloc_aligned: Aligned pointer calculated at 0x%08X", aligned_addr);
+    VOIDPTR *slot = (VOIDPTR*)(aligned_addr - sizeof(VOIDPTR));
+    dcomprintf("[HEAP] kmalloc_aligned: Storing original pointer 0x%08X at slot 0x%08X", (U32)raw_ptr, (U32)slot);
+    *slot = (VOIDPTR)raw_ptr;
+    dcomprintf("[HEAP] kmalloc_aligned: Returning aligned pointer 0x%08X", aligned_addr);
+
+    return (VOIDPTR)aligned_addr;
+}
+
+VOID kfree_aligned(VOIDPTR ptr) {
+    if (!heap.initialized || ptr == NULL) return;
+    VOIDPTR *slot = (VOIDPTR*)((PU8)ptr - sizeof(VOIDPTR));
+    VOIDPTR raw_ptr = *slot;
+    kfree(raw_ptr);
 }
 
 VOID heap_dump() {
