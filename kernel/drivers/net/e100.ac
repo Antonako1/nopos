@@ -1,0 +1,390 @@
+/*
+ * kernel/drivers/net/e100.ac — Intel PRO/100 (ICH4 Integrated LAN) Network Driver
+ */
+
+// SCB Register Offsets
+#define SCB_STATUS_REG      0x00
+#define SCB_CMD_REG         0x02
+#define SCB_POINTER_REG     0x04
+#define SCB_PORT_REG        0x08
+#define SCB_EEPROM_REG      0x0E
+
+// SCB Commands
+#define CUC_START           0x0010
+#define CUC_RESUME          0x0020
+#define RUC_START           0x0001
+#define RUC_RESUME          0x0002
+#define SCB_ACK_ALL         0xF000
+
+// Command Block Types
+#define CB_CMD_NOP          0x0000
+#define CB_CMD_IA_SETUP     0x0001
+#define CB_CMD_CONFIGURE    0x0002
+#define CB_CMD_TRANSMIT     0x0004
+
+#define CB_STATUS_C         0x8000
+#define CB_STATUS_OK        0x2000
+#define CB_CMD_EL           0x8000
+
+// RFD Status Flags
+#define RFD_STATUS_C        0x8000
+#define RFD_STATUS_OK       0x2000
+#define RFD_CMD_EL          0x8000
+
+#define E100_RX_BUFFERS     8
+
+// EEPROM Register Bitmasks
+#define EE_SK               0x01
+#define EE_CS               0x02
+#define EE_DI               0x04
+#define EE_DO               0x08
+
+typedef struct _e100_ia_setup_cb_t {
+    U16 status;
+    U16 command;
+    U32 link;
+    U8  mac_addr[6];
+    U8  pad[2];
+} e100_ia_setup_cb_t;
+
+typedef struct _e100_tx_cb_t {
+    U16 status;
+    U16 command;
+    U32 link;
+    U32 tbd_array_addr;
+    U16 byte_count;
+    U8  tx_threshold;
+    U8  tbd_number;
+    U8  frame[1518];
+} e100_tx_cb_t;
+
+typedef struct _e100_rfd_t {
+    U16 status;
+    U16 command;
+    U32 link;
+    U32 reserved;
+    U16 count;
+    U16 size;
+    U8  packet[1528];
+} e100_rfd_t;
+
+typedef struct _e100_device_t {
+    pci_device_entry_t pci_dev;
+    U16 io_base;
+    U8  mac[6];
+    U8  initialized;
+
+    e100_tx_cb_t *tx_cb;
+
+    e100_rfd_t   *rfd_ring[E100_RX_BUFFERS];
+    U32          rx_head;
+
+    U32 tx_packets;
+    U32 rx_packets;
+    U32 tx_bytes;
+    U32 rx_bytes;
+} e100_device_t;
+
+e100_device_t g_e100_dev;
+
+U0 e100_delay() {
+    io_wait();
+    io_wait();
+    io_wait();
+    io_wait();
+}
+
+// EEPROM Bit-banging accessor
+U16 e100_read_eeprom(U16 io_base, U8 addr) {
+    U16 eeprom_reg = io_base + SCB_EEPROM_REG;
+
+    // Raise CS
+    outw(eeprom_reg, EE_CS);
+    e100_delay();
+
+    // Send READ opcode (1 1 0)
+    U8 opcode = 0x06;
+    U32 bit_shift = 3;
+    while (bit_shift > 0) {
+        bit_shift = bit_shift - 1;
+        U16 val = EE_CS;
+        if ((opcode >> bit_shift) & 1) val = val | EE_DI;
+        outw(eeprom_reg, val);
+        e100_delay();
+        outw(eeprom_reg, val | EE_SK);
+        e100_delay();
+        outw(eeprom_reg, val);
+        e100_delay();
+    }
+
+    // Send Address (6-bit)
+    bit_shift = 6;
+    while (bit_shift > 0) {
+        bit_shift = bit_shift - 1;
+        U16 val = EE_CS;
+        if ((addr >> bit_shift) & 1) val = val | EE_DI;
+        outw(eeprom_reg, val);
+        e100_delay();
+        outw(eeprom_reg, val | EE_SK);
+        e100_delay();
+        outw(eeprom_reg, val);
+        e100_delay();
+    }
+
+    // Read 16-bit Data
+    U16 data = 0;
+    bit_shift = 16;
+    while (bit_shift > 0) {
+        bit_shift = bit_shift - 1;
+        outw(eeprom_reg, EE_CS | EE_SK);
+        e100_delay();
+        U16 in_val = inw(eeprom_reg);
+        if (in_val & EE_DO) {
+            data = data | (1 << bit_shift);
+        }
+        outw(eeprom_reg, EE_CS);
+        e100_delay();
+    }
+
+    // Lower CS
+    outw(eeprom_reg, 0);
+    e100_delay();
+    return data;
+}
+
+U0 e100_scb_wait(U16 io_base) {
+    U32 timeout = 10000;
+    while (timeout > 0) {
+        U8 cmd = inb(io_base + SCB_CMD_REG);
+        if (cmd == 0) return;
+        timeout--;
+        io_wait();
+    }
+    dcomprintf("[E100] WARNING: SCB command wait timed out!");
+}
+
+U8 e100_init() {
+    memset((PU8)&g_e100_dev, 0, sizeof(e100_device_t));
+
+    pci_device_entry_t pci_dev;
+    if (!find_device_by_class(PCI_CLASS_NETWORK, PCI_SUBCLASS_ETHERNET, 0xFF, &pci_dev)) {
+        dcomprintf("[E100] No Intel Ethernet controller found on PCI bus.");
+        return 0;
+    }
+
+    g_e100_dev.pci_dev = pci_dev;
+
+    U16 io_base = 0;
+    if (pci_dev.header.bar0 & 1) {
+        io_base = (U16)(pci_dev.header.bar0 & ~0x03);
+    } else if (pci_dev.header.bar1 & 1) {
+        io_base = (U16)(pci_dev.header.bar1 & ~0x03);
+    } else {
+        U32 bars[6];
+        bars[0] = pci_dev.header.bar0;
+        bars[1] = pci_dev.header.bar1;
+        bars[2] = pci_dev.header.bar2;
+        bars[3] = pci_dev.header.bar3;
+        bars[4] = pci_dev.header.bar4;
+        bars[5] = pci_dev.header.bar5;
+        for (U32 b = 0; b < 6; b = b + 1) {
+            if (bars[b] & 1) {
+                io_base = (U16)(bars[b] & ~0x03);
+                break;
+            }
+        }
+    }
+
+    g_e100_dev.io_base = io_base;
+
+    dcomprintf("[E100] Found Intel NIC at PCI %02X:%02X.%d (Vendor: 0x%04X, Dev: 0x%04X, IO Base: 0x%04X, IRQ: %d)",
+               pci_dev.bus, pci_dev.slot, pci_dev.func,
+               pci_dev.header.vendor_id, pci_dev.header.device_id, io_base, pci_dev.header.interrupt_line);
+
+    // Enable PCI Bus Mastering
+    pci_enable_bus_mastering(pci_dev.bus, pci_dev.slot, pci_dev.func);
+
+    // Issue Software Reset via PORT Register (base + 0x08 = 0x00000000)
+    outl(io_base + SCB_PORT_REG, 0x00000000);
+    for (U32 i = 0; i < 1000; i = i + 1) io_wait();
+
+    // Acknowledge all interrupts
+    outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
+
+    // Read MAC address from EEPROM words 0, 1, 2
+    U16 eep0 = e100_read_eeprom(io_base, 0);
+    U16 eep1 = e100_read_eeprom(io_base, 1);
+    U16 eep2 = e100_read_eeprom(io_base, 2);
+
+    g_e100_dev.mac[0] = (U8)(eep0 & 0xFF);
+    g_e100_dev.mac[1] = (U8)((eep0 >> 8) & 0xFF);
+    g_e100_dev.mac[2] = (U8)(eep1 & 0xFF);
+    g_e100_dev.mac[3] = (U8)((eep1 >> 8) & 0xFF);
+    g_e100_dev.mac[4] = (U8)(eep2 & 0xFF);
+    g_e100_dev.mac[5] = (U8)((eep2 >> 8) & 0xFF);
+
+    // Fallback if EEPROM returns invalid MAC 00:00:00:00:00:00 or FF:FF:FF:FF:FF:FF
+    if ((g_e100_dev.mac[0] == 0 && g_e100_dev.mac[1] == 0 && g_e100_dev.mac[2] == 0) ||
+        (g_e100_dev.mac[0] == 0xFF && g_e100_dev.mac[1] == 0xFF)) {
+        g_e100_dev.mac[0] = 0x00;
+        g_e100_dev.mac[1] = 0x0C;
+        g_e100_dev.mac[2] = 0x76;
+        g_e100_dev.mac[3] = 0x3A;
+        g_e100_dev.mac[4] = 0x9E;
+        g_e100_dev.mac[5] = 0x9C;
+        dcomprintf("[E100] EEPROM returned invalid MAC address. Using fallback MAC: 00:0C:76:3A:9E:9C");
+    }
+
+    U8 mac_str[18];
+    mac_to_str(g_e100_dev.mac, mac_str);
+    dcomprintf("[E100] Hardware MAC Address: %s", mac_str);
+
+    // Allocate 16-byte aligned TX Command Block
+    g_e100_dev.tx_cb = kmalloc_aligned(sizeof(e100_tx_cb_t), 16);
+    if (g_e100_dev.tx_cb == NULLPTR) {
+        dcomprintf("[E100] ERROR: Failed to allocate TX Command Block.");
+        return 0;
+    }
+    dcomprintf("[E100] Allocated TX Command Block at 0x%08X", (U32)g_e100_dev.tx_cb);
+    memzero(g_e100_dev.tx_cb, sizeof(e100_tx_cb_t));
+
+    dcomprintf("[E100] Initializing RX Frame Descriptor ring with %d buffers...", E100_RX_BUFFERS);
+    // Allocate 16-byte aligned RX Frame Descriptors ring
+    for (U32 i = 0; i < E100_RX_BUFFERS; i = i + 1) {
+        g_e100_dev.rfd_ring[i] = kmalloc_aligned(sizeof(e100_rfd_t), 16);
+        dcomprintf("[E100] Allocated RX RFD descriptor #%d at 0x%08X", i, g_e100_dev.rfd_ring[i]);
+        if (g_e100_dev.rfd_ring[i] == NULLPTR) {
+            dcomprintf("[E100] ERROR: Failed to allocate RX RFD descriptor #%d", i);
+            return 0;
+        }
+        dcomprintf("[E100] Initializing RX RFD descriptor #%d...", i);
+        memzero(g_e100_dev.rfd_ring[i], sizeof(e100_rfd_t));
+        g_e100_dev.rfd_ring[i]->size = 1528;
+    }
+
+    dcomprintf("[E100] Linking RX Frame Descriptors into a circular ring...");
+    // Link RFD descriptors into a circular ring
+    for (U32 i = 0; i < E100_RX_BUFFERS; i = i + 1) {
+        U32 next_idx = (i + 1) % E100_RX_BUFFERS;
+        g_e100_dev.rfd_ring[i]->link = (U32)g_e100_dev.rfd_ring[next_idx];
+        g_e100_dev.rfd_ring[i]->command = 0;
+        dcomprintf("[E100] RFD descriptor #%d linked to 0x%08X", i, (U32)g_e100_dev.rfd_ring[next_idx]);
+    }
+    // Set EL (End of List) on last ring element
+    g_e100_dev.rfd_ring[E100_RX_BUFFERS - 1]->command = RFD_CMD_EL;
+    dcomprintf("[E100] RX Frame Descriptor ring initialized successfully.");
+    
+    // Issue IA Setup Command to register hardware MAC filter
+    dcomprintf("[E100] Issuing IA Setup Command to register MAC address...");
+    e100_ia_setup_cb_t *ia_cb = kmalloc_aligned(sizeof(e100_ia_setup_cb_t), 16);
+    dcomprintf("[E100] Allocated IA Setup Command Block at 0x%08X", (U32)ia_cb);
+    if (ia_cb != NULLPTR) {
+        dcomprintf("[E100] Setting up IA Setup Command Block with MAC address...");
+        memzero(ia_cb, sizeof(e100_ia_setup_cb_t));
+        ia_cb->command = CB_CMD_IA_SETUP | CB_CMD_EL;
+        memcpy(ia_cb->mac_addr, g_e100_dev.mac, 6);
+        dcomprintf("[E100] IA Setup Command Block prepared. Issuing command to NIC...");
+        e100_scb_wait(io_base);
+        outl(io_base + SCB_POINTER_REG, (U32)ia_cb);
+        outw(io_base + SCB_CMD_REG, CUC_START);
+
+        // Wait for IA Setup completion
+        U32 timeout = 10000;
+        while (timeout > 0 && !(ia_cb->status & CB_STATUS_C)) {
+            timeout = timeout - 1;
+            io_wait();
+        }
+        dcomprintf("[E100] IA Setup Command completed with status: 0x%04X", ia_cb->status);
+        kfree_aligned(ia_cb);
+    }
+
+    dcomprintf("[E100] Enabling Receive Unit (RU) and Transmit Unit (CU)...");
+    // Start Receive Unit (RU)
+    e100_scb_wait(io_base);
+    outl(io_base + SCB_POINTER_REG, (U32)g_e100_dev.rfd_ring[0]);
+    outw(io_base + SCB_CMD_REG, RUC_START);
+    dcomprintf("[E100] Receive Unit started successfully.");
+    g_e100_dev.rx_head = 0;
+    g_e100_dev.initialized = 1;
+    dcomprintf("[E100] Intel PRO/100 LAN controller initialized successfully.");
+    return 1;
+}
+
+U8 e100_send_packet(PU8 frame_data, U16 len) {
+    if (!g_e100_dev.initialized || frame_data == NULLPTR || len == 0 || len > 1518) return 0;
+
+    U16 io_base = g_e100_dev.io_base;
+    e100_scb_wait(io_base);
+
+    e100_tx_cb_t *tx = g_e100_dev.tx_cb;
+    memzero(tx, sizeof(e100_tx_cb_t));
+
+    tx->status = 0;
+    tx->command = CB_CMD_TRANSMIT | CB_CMD_EL;
+    tx->link = 0;
+    tx->tbd_array_addr = 0xFFFFFFFF;
+    tx->byte_count = (len & 0x3FFF) | 0x8000; // Bit 15: EOF
+    tx->tx_threshold = 0xE0;
+    tx->tbd_number = 0;
+
+    memcpy(tx->frame, frame_data, len);
+
+    // Write physical address of TX block to SCB Pointer and start CUC
+    outl(io_base + SCB_POINTER_REG, (U32)tx);
+    outw(io_base + SCB_CMD_REG, CUC_START);
+
+    // Wait for transmit completion
+    U32 timeout = 20000;
+    while (timeout > 0 && !(tx->status & CB_STATUS_C)) {
+        timeout = timeout - 1;
+        io_wait();
+    }
+
+    // Acknowledge interrupts
+    outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
+
+    if (tx->status & CB_STATUS_C) {
+        g_e100_dev.tx_packets = g_e100_dev.tx_packets + 1;
+        g_e100_dev.tx_bytes   = g_e100_dev.tx_bytes + len;
+        return 1;
+    }
+
+    return 0;
+}
+
+U16 e100_poll_rx(PU8 out_buffer, U16 max_len) {
+    if (!g_e100_dev.initialized || out_buffer == NULLPTR) return 0;
+
+    U16 io_base = g_e100_dev.io_base;
+    e100_rfd_t *rfd = g_e100_dev.rfd_ring[g_e100_dev.rx_head];
+
+    if (rfd->status & RFD_STATUS_C) {
+        U16 pkt_len = rfd->count & 0x3FFF;
+        if (pkt_len > max_len) pkt_len = max_len;
+
+        memcpy(out_buffer, rfd->packet, pkt_len);
+
+        // Clear status and reset RFD descriptor
+        rfd->status = 0;
+        rfd->count = 0;
+
+        // Advance RX head
+        g_e100_dev.rx_head = (g_e100_dev.rx_head + 1) % E100_RX_BUFFERS;
+
+        // Acknowledge interrupts and resume RU if needed
+        outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
+        U16 scb_stat = inw(io_base + SCB_STATUS_REG);
+        U8 ru_stat = (U8)((scb_stat >> 2) & 0x0F);
+        if (ru_stat == 0 || ru_stat == 1 || ru_stat == 2) {
+            e100_scb_wait(io_base);
+            outl(io_base + SCB_POINTER_REG, (U32)g_e100_dev.rfd_ring[g_e100_dev.rx_head]);
+            outw(io_base + SCB_CMD_REG, RUC_START);
+        }
+
+        g_e100_dev.rx_packets = g_e100_dev.rx_packets + 1;
+        g_e100_dev.rx_bytes   = g_e100_dev.rx_bytes + pkt_len;
+        return pkt_len;
+    }
+
+    return 0;
+}
