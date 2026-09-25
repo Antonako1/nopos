@@ -3,6 +3,7 @@
 #include "../std/mm.ac"
 #include "../std/io.ac"
 #include "../std/asm.ac"
+#include "../std/net.ac"
 
 #include "./drivers/com/com.ac"
 #include "./debug/debug.ac"
@@ -15,7 +16,9 @@ U0 shell_printf(PU8 fmt, ...);
 #include "./drivers/cmos/cmos.ac"
 #include "./drivers/svga/svga.ac"
 #include "./drivers/ps2/ps2.ac"
-#include "./drivers/ata/ata.ac"
+#include "./drivers/disk/ata/ata.ac"
+#include "./drivers/pci/pci.ac"
+#include "./drivers/net/e100.ac"
 
 #include "./sys/sys.ac"
 
@@ -51,6 +54,7 @@ KERNEL_TABLE *gkt;
 #include "./fs/mbr.ac"
 #include "./fs/fat32/fat32.ac"
 #include "./fs/vfs.ac"
+#include "./net/l2.ac"
 
 #include "./sys/install.ac"
 
