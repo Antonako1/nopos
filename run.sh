@@ -11,4 +11,4 @@
 #sudo ip addr add 192.168.10.1/24 dev eth2
 #sudo ip link set eth2 up
 
-sudo IFACE=eth0 SERVER_IP=192.168.10.1 ./pxe/serve.sh
+sudo IFACE=eth1 SERVER_IP=192.168.10.1 ./pxe/serve.sh
