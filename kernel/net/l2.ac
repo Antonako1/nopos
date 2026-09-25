@@ -1,0 +1,71 @@
+#ifndef L2_AC
+#define L2_AC
+
+/*
+ * kernel/net/l2.ac — Layer 2 Ethernet Protocol Stack
+ */
+
+typedef struct _eth_hdr_t {
+    U8  dst_mac[6];
+    U8  src_mac[6];
+    U16 ethertype;
+} eth_hdr_t;
+
+U8 g_l2_dump_enabled;
+
+U8 net_l2_init() {
+    g_l2_dump_enabled = 0;
+    return e100_init();
+}
+
+U8 net_l2_send(PU8 dst_mac, U16 ethertype, PU8 payload, U16 payload_len) {
+    if (!g_e100_dev.initialized || dst_mac == NULLPTR) return 0;
+    if (payload_len > 1500) return 0;
+
+    U8 frame_buf[1518];
+    memzero(frame_buf, 1518);
+
+    eth_hdr_t *hdr = (eth_hdr_t*)frame_buf;
+    memcpy(hdr->dst_mac, dst_mac, 6);
+    memcpy(hdr->src_mac, g_e100_dev.mac, 6);
+    hdr->ethertype = htons(ethertype);
+
+    if (payload != NULLPTR && payload_len > 0) {
+        memcpy(frame_buf + sizeof(eth_hdr_t), payload, payload_len);
+    }
+
+    U16 total_len = sizeof(eth_hdr_t) + payload_len;
+    // Ethernet minimum payload padding (minimum 60-byte frame length excluding CRC)
+    if (total_len < 60) {
+        total_len = 60;
+    }
+
+    return e100_send_packet(frame_buf, total_len);
+}
+
+U16 net_l2_poll() {
+    if (!g_e100_dev.initialized) return 0;
+
+    U8 frame[1528];
+    U16 len = e100_poll_rx(frame, 1528);
+
+    if (len >= sizeof(eth_hdr_t)) {
+        eth_hdr_t *hdr = (eth_hdr_t*)frame;
+        U16 type = ntohs(hdr->ethertype);
+
+        if (g_l2_dump_enabled) {
+            U8 src_str[18];
+            U8 dst_str[18];
+            mac_to_str(hdr->src_mac, src_str);
+            mac_to_str(hdr->dst_mac, dst_str);
+            shell_printf("[L2 RX] %s -> %s | Type: 0x%04X | Len: %d bytes\n",
+                       src_str, dst_str, type, len);
+            dcomprintf("[L2 RX] %s -> %s | Type: 0x%04X | Len: %d bytes",
+                       src_str, dst_str, type, len);
+        }
+    }
+
+    return len;
+}
+
+#endif // L2_AC
