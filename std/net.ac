@@ -1,0 +1,66 @@
+#ifndef NET_AC
+#define NET_AC
+
+/*
+ * std/net.ac — Network Order Primitives & MAC Address Utilities
+ */
+
+U16 htons(U16 val) {
+    return (U16)((val >> 8) | (val << 8));
+}
+
+U16 ntohs(U16 val) {
+    return (U16)((val >> 8) | (val << 8));
+}
+
+U32 htonl(U32 val) {
+    return ((val & 0x000000FF) << 24) |
+           ((val & 0x0000FF00) << 8)  |
+           ((val & 0x00FF0000) >> 8)  |
+           ((val & 0xFF000000) >> 24);
+}
+
+U32 ntohl(U32 val) {
+    return htonl(val);
+}
+
+U0 mac_to_str(PU8 mac, PU8 str) {
+    if (mac == NULLPTR || str == NULLPTR) return;
+    PU8 hex_chars = (PU8)"0123456789ABCDEF";
+    U32 idx = 0;
+    for (U32 i = 0; i < 6; i = i + 1) {
+        U8 b = mac[i];
+        str[idx]     = hex_chars[(b >> 4) & 0x0F];
+        str[idx + 1] = hex_chars[b & 0x0F];
+        if (i < 5) {
+            str[idx + 2] = ':';
+            idx = idx + 3;
+        } else {
+            idx = idx + 2;
+        }
+    }
+    str[idx] = 0;
+}
+
+U8 hex_digit_val(U8 c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+U0 str_to_mac(PU8 str, PU8 mac) {
+    if (str == NULLPTR || mac == NULLPTR) return;
+    PU8 p = str;
+    for (U32 i = 0; i < 6; i = i + 1) {
+        if (*p == 0) break;
+        U8 hi = hex_digit_val(*p);
+        p = p + 1;
+        U8 lo = hex_digit_val(*p);
+        p = p + 1;
+        mac[i] = (hi << 4) | lo;
+        if (*p == ':') p = p + 1;
+    }
+}
+
+#endif // NET_AC
