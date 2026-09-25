@@ -385,34 +385,37 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
                 PU8 src = vol->ram_base + ((vol->root_dir_lba + i) * vol->bpb.BytesPerSector);
                 FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)src;
 
-                for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
-                    if (entry[j].Name[0] == DIR_ENTRY_END) {
+                U32 j = 0;
+                while (j < (vol->bpb.BytesPerSector / 32)) {
+                    FAT12_DIR_ENTRY *e = &entry[j];
+                    j = j + 1;
+                    if (e->Name[0] == DIR_ENTRY_END) {
                         return 0;
                     }
-                    if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+                    if (e->Name[0] == DIR_ENTRY_FREE || (e->Attributes & 0x08)) {
                         continue;
                     }
                     if (match_count == index) {
                         U32 p = 0;
                         for (U32 k = 0; k < 8; k = k + 1) {
-                            if (entry[j].Name[k] != ' ') {
-                                out_entry->name[p] = entry[j].Name[k];
+                            if (e->Name[k] != ' ') {
+                                out_entry->name[p] = e->Name[k];
                                 p = p + 1;
                             }
                         }
-                        if (entry[j].Name[8] != ' ') {
+                        if (e->Name[8] != ' ') {
                             out_entry->name[p] = '.';
                             p = p + 1;
                             for (U32 k = 8; k < 11; k = k + 1) {
-                                if (entry[j].Name[k] != ' ') {
-                                    out_entry->name[p] = entry[j].Name[k];
+                                if (e->Name[k] != ' ') {
+                                    out_entry->name[p] = e->Name[k];
                                     p = p + 1;
                                 }
                             }
                         }
                         out_entry->name[p] = 0;
-                        out_entry->size = entry[j].FileSize;
-                        out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
+                        out_entry->size = e->FileSize;
+                        out_entry->is_directory = (e->Attributes & 0x10) ? 1 : 0;
                         return 1;
                     }
                     match_count = match_count + 1;
@@ -425,34 +428,37 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
             while (cluster >= 0x002 && cluster < FAT12_EOF) {
                 FAT12_READ_CLUSTER(vol, cluster, buf);
                 FAT12_DIR_ENTRY *entry = (FAT12_DIR_ENTRY *)buf;
-                for (U32 j = 0; j < (vol->bpb.BytesPerSector / 32); j = j + 1) {
-                    if (entry[j].Name[0] == DIR_ENTRY_END) {
+                U32 j = 0;
+                while (j < (vol->bpb.BytesPerSector / 32)) {
+                    FAT12_DIR_ENTRY *e = &entry[j];
+                    j = j + 1;
+                    if (e->Name[0] == DIR_ENTRY_END) {
                         return 0;
                     }
-                    if (entry[j].Name[0] == DIR_ENTRY_FREE || (entry[j].Attributes & 0x08)) {
+                    if (e->Name[0] == DIR_ENTRY_FREE || (e->Attributes & 0x08)) {
                         continue;
                     }
                     if (match_count == index) {
                         U32 p = 0;
                         for (U32 k = 0; k < 8; k = k + 1) {
-                            if (entry[j].Name[k] != ' ') {
-                                out_entry->name[p] = entry[j].Name[k];
+                            if (e->Name[k] != ' ') {
+                                out_entry->name[p] = e->Name[k];
                                 p = p + 1;
                             }
                         }
-                        if (entry[j].Name[8] != ' ') {
+                        if (e->Name[8] != ' ') {
                             out_entry->name[p] = '.';
                             p = p + 1;
                             for (U32 k = 8; k < 11; k = k + 1) {
-                                if (entry[j].Name[k] != ' ') {
-                                    out_entry->name[p] = entry[j].Name[k];
+                                if (e->Name[k] != ' ') {
+                                    out_entry->name[p] = e->Name[k];
                                     p = p + 1;
                                 }
                             }
                         }
                         out_entry->name[p] = 0;
-                        out_entry->size = entry[j].FileSize;
-                        out_entry->is_directory = (entry[j].Attributes & 0x10) ? 1 : 0;
+                        out_entry->size = e->FileSize;
+                        out_entry->is_directory = (e->Attributes & 0x10) ? 1 : 0;
                         return 1;
                     }
                     match_count = match_count + 1;
@@ -463,15 +469,21 @@ U8 vfs_readdir(VFS_NODE *dir_node, U32 index, VFS_DIR_ENTRY *out_entry) {
         }
     } else if (m->fs_type == VFS_FS_FAT32) {
         U8 cluster_buf[4096];
-        U32 target_cluster = (dir_node->cluster != 0) ? dir_node->cluster : m->fat32_vol.root_cluster;
+        U32 target_cluster = dir_node->cluster;
+        if (target_cluster == 0) {
+            target_cluster = m->fat32_vol.root_cluster;
+        }
         U32 match_count = 0;
 
         while (target_cluster >= 2 && target_cluster < FAT32_EOF) {
             fat32_read_cluster(&m->fat32_vol, target_cluster, cluster_buf);
             U32 entries = m->fat32_vol.bytes_per_cluster / 32;
 
-            for (U32 i = 0; i < entries; i = i + 1) {
+            U32 i = 0;
+            while (i < entries) {
                 FAT12_DIR_ENTRY *dir = (FAT12_DIR_ENTRY *)(cluster_buf + (i * 32));
+                i = i + 1;
+
                 if (dir->Name[0] == DIR_ENTRY_END) {
                     return 0;
                 }
