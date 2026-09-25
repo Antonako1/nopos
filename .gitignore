@@ -13,3 +13,5 @@ agents.md
 kernel/mm/MM.md
 
 l2_*.txt
+kernel/fs/FS.md
+kernel/net/plan.md
