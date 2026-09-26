@@ -8,6 +8,7 @@
 #define SCB_POINTER_REG     0x04
 #define SCB_PORT_REG        0x08
 #define SCB_EEPROM_REG      0x0E
+#define SCB_MDI_REG         0x10
 
 // SCB Commands
 #define CUC_START           0x0010
@@ -73,6 +74,8 @@ typedef struct _e100_device_t {
     U16 io_base;
     U8  mac[6];
     U8  initialized;
+    U8  phy_addr;
+    U8  link_up;
 
     e100_tx_cb_t *tx_cb;
 
@@ -152,15 +155,30 @@ U16 e100_read_eeprom(U16 io_base, U8 addr) {
     return data;
 }
 
+U16 e100_mdi_read(U16 io_base, U8 phy_addr, U8 reg_addr) {
+    U32 cmd = ((U32)2 << 26) | ((U32)(phy_addr & 0x1F) << 21) | ((U32)(reg_addr & 0x1F) << 16);
+    outl(io_base + SCB_MDI_REG, cmd);
+    U32 timeout = 10000;
+    while (timeout > 0) {
+        U32 res = inl(io_base + SCB_MDI_REG);
+        if (res & (1 << 28)) {
+            return (U16)(res & 0xFFFF);
+        }
+        timeout = timeout - 1;
+        io_wait();
+    }
+    return 0xFFFF;
+}
+
 U0 e100_scb_wait(U16 io_base) {
     U32 timeout = 10000;
     while (timeout > 0) {
         U8 cmd = inb(io_base + SCB_CMD_REG);
         if (cmd == 0) return;
-        timeout--;
+        timeout = timeout - 1;
         io_wait();
     }
-    dcomprintf("[E100] WARNING: SCB command wait timed out!");
+    dcomprintf("[E100] WARNING: SCB command wait timed out (cmd=0x%02X)!", inb(io_base + SCB_CMD_REG));
 }
 
 U8 e100_init() {
@@ -206,10 +224,11 @@ U8 e100_init() {
 
     // Issue Software Reset via PORT Register (base + 0x08 = 0x00000000)
     outl(io_base + SCB_PORT_REG, 0x00000000);
-    for (U32 i = 0; i < 1000; i = i + 1) io_wait();
+    for (U32 i = 0; i < 2000; i = i + 1) io_wait();
 
-    // Acknowledge all interrupts
+    // Acknowledge all interrupts and mask them
     outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
+    outw(io_base + SCB_CMD_REG, 0x0100);
 
     // Read MAC address from EEPROM words 0, 1, 2
     U16 eep0 = e100_read_eeprom(io_base, 0);
@@ -239,6 +258,20 @@ U8 e100_init() {
     mac_to_str(g_e100_dev.mac, mac_str);
     dcomprintf("[E100] Hardware MAC Address: %s", mac_str);
 
+    // Probe PHY status via MDI
+    g_e100_dev.phy_addr = 1;
+    g_e100_dev.link_up = 0;
+    for (U8 p = 0; p < 32; p = p + 1) {
+        U16 bmsr = e100_mdi_read(io_base, p, 1);
+        if (bmsr != 0 && bmsr != 0xFFFF) {
+            g_e100_dev.phy_addr = p;
+            g_e100_dev.link_up = (bmsr & (1 << 2)) ? 1 : 0;
+            dcomprintf("[E100] Found PHY at address %d: BMSR=0x%04X (Link: %s)",
+                       p, bmsr, g_e100_dev.link_up ? "UP" : "DOWN");
+            break;
+        }
+    }
+
     // Allocate 16-byte aligned TX Command Block
     g_e100_dev.tx_cb = kmalloc_aligned(sizeof(e100_tx_cb_t), 16);
     if (g_e100_dev.tx_cb == NULLPTR) {
@@ -257,7 +290,6 @@ U8 e100_init() {
             dcomprintf("[E100] ERROR: Failed to allocate RX RFD descriptor #%d", i);
             return 0;
         }
-        dcomprintf("[E100] Initializing RX RFD descriptor #%d...", i);
         memzero(g_e100_dev.rfd_ring[i], sizeof(e100_rfd_t));
         g_e100_dev.rfd_ring[i]->size = 1528;
     }
@@ -268,7 +300,6 @@ U8 e100_init() {
         U32 next_idx = (i + 1) % E100_RX_BUFFERS;
         g_e100_dev.rfd_ring[i]->link = (U32)g_e100_dev.rfd_ring[next_idx];
         g_e100_dev.rfd_ring[i]->command = 0;
-        dcomprintf("[E100] RFD descriptor #%d linked to 0x%08X", i, (U32)g_e100_dev.rfd_ring[next_idx]);
     }
     // Set EL (End of List) on last ring element
     g_e100_dev.rfd_ring[E100_RX_BUFFERS - 1]->command = RFD_CMD_EL;
@@ -279,30 +310,36 @@ U8 e100_init() {
     e100_ia_setup_cb_t *ia_cb = kmalloc_aligned(sizeof(e100_ia_setup_cb_t), 16);
     dcomprintf("[E100] Allocated IA Setup Command Block at 0x%08X", (U32)ia_cb);
     if (ia_cb != NULLPTR) {
-        dcomprintf("[E100] Setting up IA Setup Command Block with MAC address...");
         memzero(ia_cb, sizeof(e100_ia_setup_cb_t));
+        ia_cb->status = 0;
         ia_cb->command = CB_CMD_IA_SETUP | CB_CMD_EL;
+        ia_cb->link = 0;
         memcpy(ia_cb->mac_addr, g_e100_dev.mac, 6);
         dcomprintf("[E100] IA Setup Command Block prepared. Issuing command to NIC...");
         e100_scb_wait(io_base);
         outl(io_base + SCB_POINTER_REG, (U32)ia_cb);
-        outw(io_base + SCB_CMD_REG, CUC_START);
+        e100_scb_wait(io_base);
+        outb(io_base + SCB_CMD_REG, CUC_START);
+        e100_scb_wait(io_base);
 
         // Wait for IA Setup completion
-        U32 timeout = 10000;
+        U32 timeout = 50000;
         while (timeout > 0 && !(ia_cb->status & CB_STATUS_C)) {
             timeout = timeout - 1;
             io_wait();
         }
         dcomprintf("[E100] IA Setup Command completed with status: 0x%04X", ia_cb->status);
+        outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
         kfree_aligned(ia_cb);
     }
 
-    dcomprintf("[E100] Enabling Receive Unit (RU) and Transmit Unit (CU)...");
+    dcomprintf("[E100] Enabling Receive Unit (RU)...");
     // Start Receive Unit (RU)
     e100_scb_wait(io_base);
     outl(io_base + SCB_POINTER_REG, (U32)g_e100_dev.rfd_ring[0]);
-    outw(io_base + SCB_CMD_REG, RUC_START);
+    e100_scb_wait(io_base);
+    outb(io_base + SCB_CMD_REG, RUC_START);
+    e100_scb_wait(io_base);
     dcomprintf("[E100] Receive Unit started successfully.");
     g_e100_dev.rx_head = 0;
     g_e100_dev.initialized = 1;
@@ -311,10 +348,19 @@ U8 e100_init() {
 }
 
 U8 e100_send_packet(PU8 frame_data, U16 len) {
-    if (!g_e100_dev.initialized || frame_data == NULLPTR || len == 0 || len > 1518) return 0;
+    if (!g_e100_dev.initialized || frame_data == NULLPTR || len == 0 || len > 1518) {
+        dcomprintf("[E100] Invalid parameters. init: %d, frame_data: 0x%08X, len: %d", g_e100_dev.initialized, (U32)frame_data, len);
+        return 0;
+    }
 
     U16 io_base = g_e100_dev.io_base;
+    
+    // Acknowledge any pending status interrupts
+    outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
     e100_scb_wait(io_base);
+
+    U16 scb_stat_before = inw(io_base + SCB_STATUS_REG);
+    dcomprintf("[E100] Sending packet of length %d bytes... (SCB Status before TX: 0x%04X)", len, scb_stat_before);
 
     e100_tx_cb_t *tx = g_e100_dev.tx_cb;
     memzero(tx, sizeof(e100_tx_cb_t));
@@ -324,31 +370,47 @@ U8 e100_send_packet(PU8 frame_data, U16 len) {
     tx->link = 0;
     tx->tbd_array_addr = 0xFFFFFFFF;
     tx->byte_count = (len & 0x3FFF) | 0x8000; // Bit 15: EOF
-    tx->tx_threshold = 0xE0;
+    tx->tx_threshold = 0x00; // 0 = Store and Forward / default threshold
     tx->tbd_number = 0;
 
     memcpy(tx->frame, frame_data, len);
+    dcomprintf("[E100] Packet data copied to TX Command Block. Preparing to transmit...");
 
-    // Write physical address of TX block to SCB Pointer and start CUC
+    // Write physical address of TX block to SCB Pointer
     outl(io_base + SCB_POINTER_REG, (U32)tx);
-    outw(io_base + SCB_CMD_REG, CUC_START);
+    e100_scb_wait(io_base);
 
-    // Wait for transmit completion
-    U32 timeout = 20000;
-    while (timeout > 0 && !(tx->status & CB_STATUS_C)) {
+    // Start Command Unit
+    outb(io_base + SCB_CMD_REG, CUC_START);
+    e100_scb_wait(io_base);
+
+    U16 scb_stat_started = inw(io_base + SCB_STATUS_REG);
+    dcomprintf("[E100] Transmit Unit started. (SCB Status: 0x%04X) Waiting for completion...", scb_stat_started);
+
+    // Wait for transmit completion via CB status or SCB Status register (CX = 0x8000, CNA = 0x2000)
+    U32 timeout = 100000;
+    U16 scb_stat_curr = 0;
+    while (timeout > 0) {
+        scb_stat_curr = inw(io_base + SCB_STATUS_REG);
+        if ((tx->status & CB_STATUS_C) || (scb_stat_curr & (0x8000 | 0x2000))) {
+            break;
+        }
         timeout = timeout - 1;
         io_wait();
     }
+    dcomprintf("[E100] Transmit completed with status: 0x%04X, SCB Status: 0x%04X", tx->status, scb_stat_curr);
 
     // Acknowledge interrupts
     outw(io_base + SCB_STATUS_REG, SCB_ACK_ALL);
 
-    if (tx->status & CB_STATUS_C) {
+    if ((tx->status & CB_STATUS_C) || (scb_stat_curr & (0x8000 | 0x2000))) {
         g_e100_dev.tx_packets = g_e100_dev.tx_packets + 1;
         g_e100_dev.tx_bytes   = g_e100_dev.tx_bytes + len;
+        dcomprintf("[E100] Packet transmitted successfully. Total TX packets: %u, Total TX bytes: %u", g_e100_dev.tx_packets, g_e100_dev.tx_bytes);
         return 1;
     }
 
+    dcomprintf("[E100] TX Failed/Timed out! Status=0x%04X, SCB Status=0x%04X", tx->status, scb_stat_curr);
     return 0;
 }
 
@@ -367,6 +429,12 @@ U16 e100_poll_rx(PU8 out_buffer, U16 max_len) {
         // Clear status and reset RFD descriptor
         rfd->status = 0;
         rfd->count = 0;
+        rfd->command = 0;
+
+        // Set EL on current descriptor and clear EL on previous
+        U32 prev_idx = (g_e100_dev.rx_head + E100_RX_BUFFERS - 1) % E100_RX_BUFFERS;
+        g_e100_dev.rfd_ring[prev_idx]->command = 0;
+        rfd->command = RFD_CMD_EL;
 
         // Advance RX head
         g_e100_dev.rx_head = (g_e100_dev.rx_head + 1) % E100_RX_BUFFERS;
@@ -378,7 +446,9 @@ U16 e100_poll_rx(PU8 out_buffer, U16 max_len) {
         if (ru_stat == 0 || ru_stat == 1 || ru_stat == 2) {
             e100_scb_wait(io_base);
             outl(io_base + SCB_POINTER_REG, (U32)g_e100_dev.rfd_ring[g_e100_dev.rx_head]);
-            outw(io_base + SCB_CMD_REG, RUC_START);
+            e100_scb_wait(io_base);
+            outb(io_base + SCB_CMD_REG, RUC_START);
+            e100_scb_wait(io_base);
         }
 
         g_e100_dev.rx_packets = g_e100_dev.rx_packets + 1;

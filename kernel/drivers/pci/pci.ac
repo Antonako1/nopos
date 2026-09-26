@@ -215,11 +215,9 @@ U16 pci_read_config_word(U8 bus, U8 slot, U8 func, U8 offset) {
 }
 
 U0 pci_write_config_word(U8 bus, U8 slot, U8 func, U8 offset, U16 val) {
-    U32 dword = pci_read_config_dword(bus, slot, func, offset);
-    U32 shift = (offset & 2) * 8;
-    U32 mask = ~(0xFFFF << shift);
-    U32 new_dword = (dword & mask) | ((U32)val << shift);
-    pci_write_config_dword(bus, slot, func, offset, new_dword);
+    U32 address = 0x80000000 | ((U32)bus << 16) | ((U32)slot << 11) | ((U32)func << 8) | ((U32)offset & 0xFC);
+    outl(PCI_CONFIG_ADDRESS, address);
+    outw(PCI_CONFIG_DATA + (offset & 2), val);
 }
 
 U8 pci_read_config_byte(U8 bus, U8 slot, U8 func, U8 offset) {
@@ -229,7 +227,7 @@ U8 pci_read_config_byte(U8 bus, U8 slot, U8 func, U8 offset) {
 
 BOOL pci_enable_bus_mastering(U8 bus, U8 slot, U8 func) {
     U16 cmd = pci_get_command(bus, slot, func);
-    cmd |= (PCI_COMMAND_IO | PCI_COMMAND_BUSMASTER);
+    cmd |= (PCI_COMMAND_IO | PCI_COMMAND_BUSMASTER | 0x0002);
     pci_write_config_word(bus, slot, func, PCI_COMMAND_OFFSET, cmd);
 
     cmd = pci_get_command(bus, slot, func);

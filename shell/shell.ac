@@ -595,6 +595,7 @@ U0 shell_cmd_ifconfig() {
                  g_e100_dev.pci_dev.header.vendor_id, g_e100_dev.pci_dev.header.device_id);
     shell_printf("  I/O Port:    0x%04X\n", g_e100_dev.io_base);
     shell_printf("  IRQ Line:    %d\n", g_e100_dev.pci_dev.header.interrupt_line);
+    shell_printf("  Link Status: %s (PHY Addr: %d)\n", g_e100_dev.link_up ? "UP (Connected)" : "DOWN (Disconnected/Negotiating)", g_e100_dev.phy_addr);
     shell_printf("  TX Packets:  %u (%u bytes)\n", g_e100_dev.tx_packets, g_e100_dev.tx_bytes);
     shell_printf("  RX Packets:  %u (%u bytes)\n", g_e100_dev.rx_packets, g_e100_dev.rx_bytes);
     shell_printf("  L2 Dump:     %s\n", g_l2_dump_enabled ? "ENABLED" : "DISABLED");

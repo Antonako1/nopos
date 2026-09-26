@@ -19,24 +19,43 @@ U8 net_l2_init() {
 }
 
 U8 net_l2_send(PU8 dst_mac, U16 ethertype, PU8 payload, U16 payload_len) {
-    if (!g_e100_dev.initialized || dst_mac == NULLPTR) return 0;
-    if (payload_len > 1500) return 0;
+    dcomprintf("[L2 TX] Sending Ethernet frame to %02X:%02X:%02X:%02X:%02X:%02X | Type: 0x%04X | Payload Length: %d bytes",
+               dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5],
+               ethertype, payload_len);
+    if (!g_e100_dev.initialized || dst_mac == NULLPTR) {
+        dcomprintf("[L2 TX] E100 device not initialized or destination MAC is NULL. Aborting send.");
+        return 0;
+    }
+    if (payload_len > 1500) {
+        dcomprintf("[L2 TX] Payload length exceeds maximum Ethernet frame size (1500 bytes). Aborting send.");
+        return 0;
+    }
 
     U8 frame_buf[1518];
     memzero(frame_buf, 1518);
 
-    eth_hdr_t *hdr = (eth_hdr_t*)frame_buf;
+    eth_hdr_t *hdr = frame_buf;
     memcpy(hdr->dst_mac, dst_mac, 6);
     memcpy(hdr->src_mac, g_e100_dev.mac, 6);
     hdr->ethertype = htons(ethertype);
 
+    U8 src_str[18];
+    U8 dst_str[18];
+    mac_to_str(g_e100_dev.mac, src_str);
+    mac_to_str(dst_mac, dst_str);
+    dcomprintf("[L2 TX] Ethernet Header: Src MAC: %s, Dst MAC: %s, Ethertype: 0x%04X",
+               src_str, dst_str, ethertype);
+
     if (payload != NULLPTR && payload_len > 0) {
         memcpy(frame_buf + sizeof(eth_hdr_t), payload, payload_len);
     }
+    dcomprintf("[L2 TX] Payload copied to frame buffer. Total frame length: %d bytes", sizeof(eth_hdr_t) + payload_len);
 
     U16 total_len = sizeof(eth_hdr_t) + payload_len;
+    dcomprintf("[L2 TX] Total frame length before padding: %d bytes", total_len);
     // Ethernet minimum payload padding (minimum 60-byte frame length excluding CRC)
     if (total_len < 60) {
+        dcomprintf("[L2 TX] Frame length less than 60 bytes. Padding with %d bytes.", 60 - total_len);
         total_len = 60;
     }
 
